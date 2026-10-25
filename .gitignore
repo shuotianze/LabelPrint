@@ -16,7 +16,8 @@ _tmp_blec/
 src-tauri/gen/**/build/
 src-tauri/gen/android/.gradle/
 src-tauri/gen/android/.idea/
-src-tauri/gen/android/local.properties
+# gradle 会把本机 SDK 路径写进 local.properties，换机器就是错的
+local.properties
 # 编译好的 .so 是指向 src-tauri/target 的符号链接，没有提交意义
 src-tauri/gen/android/app/src/main/jniLibs/
 

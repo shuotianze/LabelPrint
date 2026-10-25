@@ -1,0 +1,13 @@
+# 统一用 LF：这个项目在 Windows 上开发、安卓/macOS 上也会 clone，
+# 让 git 自己决定行尾会在每个文件上反复刷"LF will be replaced by CRLF"警告。
+* text=auto eol=lf
+
+# 二进制文件别做行尾转换，否则图片会被改坏
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.icns binary
+*.jks binary
+*.exe binary
+*.apk binary

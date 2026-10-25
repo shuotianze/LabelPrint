@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <title>标签打印</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <!--
+      兜底错误显示：模块加载失败或运行时抛错时，页面会全白，
+      用户什么都看不到也没法反馈。这里把错误直接画在页面上，
+      开发期一眼能看出问题，打包后也不会让用户面对纯白屏。
+    -->
+    <div id="fatal" hidden></div>
+    <script>
+      (function () {
+        function show(msg) {
+          var box = document.getElementById("fatal");
+          if (!box) return;
+          box.hidden = false;
+          box.style.cssText =
+            "position:fixed;inset:0;z-index:99999;background:#fff;color:#c00;" +
+            "font:13px/1.6 Consolas,monospace;padding:24px;white-space:pre-wrap;overflow:auto";
+          box.textContent = "启动失败：\n\n" + msg;
+        }
+        window.addEventListener("error", function (e) {
+          if (e.target && e.target.tagName === "SCRIPT") {
+            show("脚本加载失败 " + (e.target.src || ""));
+          } else {
+            show((e.message || "未知错误") + "\n" + (e.filename || "") + ":" + (e.lineno || 0));
+          }
+        }, true);
+        window.addEventListener("unhandledrejection", function (e) {
+          var r = e.reason;
+          show((r && (r.stack || r.message)) || String(r));
+        });
+      })();
+    </script>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

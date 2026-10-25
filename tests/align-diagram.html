@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>以中间点为基准的横向布局</title>
+    <style>
+      html, body { margin: 0; background: #fff; }
+      svg { display: block; }
+    </style>
+  </head>
+  <body>
+    <svg width="980" height="520" viewBox="0 0 980 520" xmlns="http://www.w3.org/2000/svg"
+      font-family="Microsoft YaHei UI, Microsoft YaHei, PingFang SC, sans-serif">
+      <rect width="980" height="520" fill="#ffffff" />
+
+      <text x="40" y="46" font-size="22" font-weight="600" fill="#1f2329">
+        以中间点为基准：宽度不同，中心对齐
+      </text>
+      <text x="40" y="76" font-size="14" fill="#6b7280">
+        中心 X = left + w / 2　　左 = 中心 − w / 2　　右 = 左 + w　　容器 50mm / 中心 25mm
+      </text>
+
+      <!-- 容器 -->
+      <rect x="280" y="112" width="500" height="252" fill="#fafbfc" stroke="#d0d5dd" stroke-dasharray="5 4" />
+      <text x="280" y="104" font-size="12" fill="#6b7280">容器 50mm（B1 满宽）</text>
+
+      <!-- 宽 30 -->
+      <rect x="380" y="140" width="300" height="72" rx="6" fill="#eaf1ff" stroke="#2f6fed" stroke-width="1.5" />
+      <text x="530" y="172" font-size="15" font-weight="600" fill="#1f2329" text-anchor="middle">
+        宽 30mm
+      </text>
+      <text x="530" y="196" font-size="13" fill="#4b5563" text-anchor="middle">
+        左 10 · 右 40 · 中心 25
+      </text>
+
+      <!-- 宽 50 -->
+      <rect x="280" y="256" width="500" height="72" rx="6" fill="#f2f7ee" stroke="#3f9142" stroke-width="1.5" />
+      <text x="530" y="288" font-size="15" font-weight="600" fill="#1f2329" text-anchor="middle">
+        宽 50mm
+      </text>
+      <text x="530" y="312" font-size="13" fill="#4b5563" text-anchor="middle">
+        左 0 · 右 50 · 中心 25
+      </text>
+
+      <!-- 中心线 -->
+      <line x1="530" y1="112" x2="530" y2="364" stroke="#e0574a" stroke-width="1.5" stroke-dasharray="6 5" />
+      <circle cx="530" cy="112" r="4" fill="#e0574a" />
+      <rect x="470" y="86" width="120" height="22" rx="11" fill="#fdecea" />
+      <text x="530" y="102" font-size="12.5" font-weight="600" fill="#c0392b" text-anchor="middle">
+        中心 X = 25mm
+      </text>
+
+      <!-- 宽度标注：30 -->
+      <line x1="380" y1="230" x2="680" y2="230" stroke="#2f6fed" stroke-width="1" />
+      <line x1="380" y1="224" x2="380" y2="236" stroke="#2f6fed" stroke-width="1" />
+      <line x1="680" y1="224" x2="680" y2="236" stroke="#2f6fed" stroke-width="1" />
+      <rect x="502" y="213" width="56" height="14" fill="#ffffff" />
+      <text x="530" y="224" font-size="11.5" fill="#2f6fed" text-anchor="middle">w = 30</text>
+
+      <!-- 宽度标注：50 -->
+      <line x1="280" y1="346" x2="780" y2="346" stroke="#3f9142" stroke-width="1" />
+      <line x1="280" y1="340" x2="280" y2="352" stroke="#3f9142" stroke-width="1" />
+      <line x1="780" y1="340" x2="780" y2="352" stroke="#3f9142" stroke-width="1" />
+      <rect x="502" y="329" width="56" height="14" fill="#ffffff" />
+      <text x="530" y="340" font-size="11.5" fill="#3f9142" text-anchor="middle">w = 50</text>
+
+      <!-- 刻度尺 -->
+      <line x1="280" y1="392" x2="780" y2="392" stroke="#9aa4b2" stroke-width="1" />
+      <g font-size="11.5" fill="#6b7280" text-anchor="middle">
+        <line x1="280" y1="392" x2="280" y2="400" stroke="#9aa4b2" />
+        <text x="280" y="416">0</text>
+        <line x1="380" y1="392" x2="380" y2="400" stroke="#9aa4b2" />
+        <text x="380" y="416">10</text>
+        <line x1="530" y1="392" x2="530" y2="404" stroke="#e0574a" />
+        <text x="530" y="420" fill="#c0392b" font-weight="600">25</text>
+        <line x1="680" y1="392" x2="680" y2="400" stroke="#9aa4b2" />
+        <text x="680" y="416">40</text>
+        <line x1="780" y1="392" x2="780" y2="400" stroke="#9aa4b2" />
+        <text x="780" y="416">50</text>
+      </g>
+
+      <!-- 结论 -->
+      <text x="40" y="470" font-size="13.5" fill="#1f2329">
+        宽 30 → 左 10 / 右 40；宽 50 → 左 0 / 右 50。两者宽度差 20mm，中心都是 25mm。
+      </text>
+      <text x="40" y="494" font-size="12.5" fill="#6b7280">
+        宽度向外扩、向内收时左右两边对称变化，中心线不动 —— 这就是编辑器改「宽」和拖手柄的算法。
+      </text>
+    </svg>
+  </body>
+</html>

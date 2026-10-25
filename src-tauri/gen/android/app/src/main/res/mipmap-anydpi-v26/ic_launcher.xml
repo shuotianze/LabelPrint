@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  自适应图标（Android 8.0+）。
+  没有这个文件时系统只能拿到方形 PNG，部分启动器（以及 Android 13 的
+  主题图标）会显示成一团空白——这就是"装了但没有图标"的原因。
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_background" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+    <monochrome android:drawable="@mipmap/ic_launcher_foreground" />
+</adaptive-icon>

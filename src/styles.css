@@ -1,0 +1,607 @@
+/* 白色极简：只用中性灰 + 一个强调色，不引入任何 UI 框架 */
+:root {
+  --bg: #ffffff;
+  --panel: #fafaf9;
+  --line: #e5e4e1;
+  --text: #1c1c1a;
+  --muted: #6b6a66;
+  --accent: #1a6fd4;
+  --danger: #c0392b;
+  --ok: #1d9e75;
+  --radius: 8px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  /* 中文优先用雅黑（Windows）和苹方（macOS），都比 system-ui 兜底的字形清楚。
+   * 关掉次像素(ClearType)渲染：彩色边缘在浅色界面上看着就是"发虚"，
+   * 灰度抗锯齿更干净——这一条同时管住了加粗文字。 */
+  font-family: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC",
+    -apple-system, "Segoe UI", system-ui, sans-serif;
+  font-size: 15px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+/* 加粗只用 600，不上 700：中文没有真正的 700 字重时浏览器会"假加粗"，
+ * 靠横向涂抹笔画，笔画边缘立刻发毛。600 走的是字体自带的 Bold，边缘干净。 */
+b, strong { font-weight: 600; }
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--line);
+  flex: 0 0 auto;
+}
+
+header h1 {
+  font-size: 17px;
+  font-weight: 500;
+  margin: 0;
+}
+
+.badge {
+  font-size: 13px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+.badge.on { color: var(--ok); border-color: #9fe1cb; background: #e1f5ee; }
+.badge.off { color: var(--muted); }
+
+main {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.sidebar {
+  width: 288px;
+  flex: 0 0 288px;
+  border-right: 1px solid var(--line);
+  padding: 16px;
+  overflow-y: auto;
+  background: var(--panel);
+}
+
+.workspace {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 16px 20px;
+  gap: 12px;
+  overflow: auto;
+}
+
+h2 {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--muted);
+  margin: 0 0 10px;
+  letter-spacing: 0.02em;
+}
+
+button {
+  font: inherit;
+  font-size: 14px;
+  padding: 7px 14px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--text);
+  cursor: pointer;
+}
+button:hover:not(:disabled) { border-color: #b4b2a9; }
+button:disabled { opacity: 0.45; cursor: not-allowed; }
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.device-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 10px 0;
+}
+
+.device {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fff;
+  cursor: pointer;
+}
+.device:hover { border-color: var(--accent); }
+.device.active { border-color: var(--accent); background: #f2f8ff; }
+.device .name { font-size: 14px; }
+.device .addr { font-size: 12px; color: var(--muted); font-family: ui-monospace, monospace; }
+
+table.info {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+table.info td {
+  padding: 5px 0;
+  border-bottom: 1px solid var(--line);
+}
+table.info td:first-child { color: var(--muted); width: 82px; }
+table.info td:last-child { font-family: ui-monospace, monospace; text-align: right; }
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.toolbar label { font-size: 14px; color: var(--muted); }
+input[type="number"], select {
+  font: inherit;
+  font-size: 14px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fff;
+  color: var(--text);
+  width: 84px;
+}
+
+.preview-wrap {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 240px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+  background: #fff;
+  padding: 16px;
+  overflow: auto;
+}
+#preview { image-rendering: pixelated; max-width: 100%; }
+
+/* ---- 编辑舞台：canvas 是打印内容，overlay 上的虚线框负责交互 ---- */
+.stage-wrap {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  min-height: 0;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+  background: #fff;
+  padding: 16px;
+  overflow: auto;
+}
+
+.stage {
+  position: relative;
+  flex: 0 0 auto;
+  background: #fff;
+  box-shadow: 0 0 0 1px var(--line);
+}
+
+#preview {
+  display: block;
+  image-rendering: pixelated;
+}
+
+.overlay {
+  position: absolute;
+  left: 0;
+  top: 0;
+  /* 空白区域也要能接住 pointerdown，用来取消选中 */
+  touch-action: none;
+}
+
+.el-box {
+  position: absolute;
+  border: 1px dashed rgba(26, 111, 212, 0.4);
+  cursor: move;
+  touch-action: none;
+}
+.el-box:hover { border-color: var(--accent); }
+.el-box.selected {
+  border: 1px solid var(--accent);
+  box-shadow: 0 0 0 1px rgba(26, 111, 212, 0.2);
+}
+.el-box.hidden-el { opacity: 0.3; border-style: dotted; }
+
+/* 纸比打印头宽时，画布右侧那条"打不到"的区域 */
+.dead-zone {
+  position: absolute;
+  top: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    45deg,
+    #f1f3f5,
+    #f1f3f5 5px,
+    #dfe3e8 5px,
+    #dfe3e8 10px
+  );
+  border-left: 1px dashed var(--danger);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.dead-zone span {
+  writing-mode: vertical-rl;
+  font-size: 11px;
+  letter-spacing: 2px;
+  color: var(--danger);
+  white-space: nowrap;
+}
+
+.grip {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  width: 9px;
+  height: 9px;
+  background: var(--accent);
+  border: 1px solid #fff;
+  border-radius: 2px;
+  cursor: nwse-resize;
+  touch-action: none;
+}
+
+/* ---- 右侧属性栏 ----
+ * 桌面上 .sheet 只是一层"透明"的 flex 容器，宽度由它撑开；
+ * 手机上它整个变成从底部滑出的面板。 */
+.sheet {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 304px;
+  flex: 0 0 304px;
+}
+
+.sheet-bar { display: none; }
+.icon-btn { display: none; }
+.scrim { display: none; }
+
+.inspector {
+  flex: 1 1 auto;
+  min-width: 0;
+  border-left: 1px solid var(--line);
+  padding: 16px;
+  overflow-y: auto;
+  background: var(--panel);
+}
+
+.fields {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+  color: var(--muted);
+}
+.field > span {
+  width: 62px;
+  flex: 0 0 62px;
+}
+.field > i {
+  font-style: normal;
+  font-size: 12px;
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+.field input,
+.field select,
+.field textarea {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+  font: inherit;
+  font-size: 13.5px;
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text);
+}
+.field textarea { resize: vertical; line-height: 1.4; }
+.field input[type="range"] { padding: 0; border: 0; }
+
+/* 内容类的多行字段，标题在上面 */
+.field-block {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+.field-block > span { width: auto; flex: 0 0 auto; }
+
+.check-row { cursor: pointer; }
+.check-row input { flex: 0 0 auto; }
+.check-row span { width: auto; flex: 1 1 auto; }
+
+.row {
+  display: flex;
+  gap: 8px;
+}
+.row .field { flex: 1 1 0; min-width: 0; }
+.row .field > span { width: 20px; flex: 0 0 20px; }
+
+.row-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.row-actions + .row-actions { margin-top: 6px; }
+.row-actions button {
+  flex: 1 1 auto;
+  padding: 5px 8px;
+  font-size: 13px;
+}
+
+/* 工具栏里的分组分隔线 */
+.sep {
+  width: 1px;
+  height: 18px;
+  background: var(--line);
+  margin: 0 2px;
+}
+
+/* 工具栏两行之间拉开一点 */
+.toolbar + .toolbar { margin-top: -6px; }
+
+.log {
+  font-family: ui-monospace, monospace;
+  font-size: 13px;
+  color: var(--muted);
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+  max-height: 96px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+}
+.log .err { color: var(--danger); }
+.mt { margin-top: 14px; }
+.hint { font-size: 13px; color: var(--muted); line-height: 1.6; }
+
+/* 扫描时"显示全部蓝牙设备"的勾选框 */
+.check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.check input { margin: 0; }
+
+/* 浓度滑条 */
+input[type="range"] {
+  width: 120px;
+  accent-color: var(--accent);
+}
+.val {
+  font-family: ui-monospace, monospace;
+  font-size: 13px;
+  color: var(--text);
+  min-width: 14px;
+}
+
+/* 打印进度条：发数据阶段和走纸阶段共用一个，取较大值 */
+.progress {
+  height: 3px;
+  background: var(--line);
+  border-radius: 999px;
+  overflow: hidden;
+  flex: 0 0 auto;
+}
+.progress[hidden] { display: none; }
+.progress i {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  transition: width 0.15s linear;
+}
+
+/* ==================================================================
+   手机 / 平板竖屏：单栏 + 抽屉 + 底部属性面板
+   ------------------------------------------------------------------
+   断点 860px 和 main.ts 里的 MOBILE_Q 必须一致。
+   桌面布局（三栏：设备 288 | 画布 | 属性 304）在 360px 宽的手机上
+   只剩中间那条缝，根本没法点，所以整块换掉而不是"缩小字号"。
+   ================================================================== */
+@media (max-width: 860px) {
+  header { padding: 8px 10px; gap: 8px; }
+  header h1 { font-size: 16px; }
+  .icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 38px;
+    padding: 0;
+    font-size: 18px;
+    line-height: 1;
+  }
+  #model-badge {
+    max-width: 38vw;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  main { flex-direction: column; }
+
+  .workspace {
+    padding: 10px;
+    gap: 8px;
+    overflow: hidden;
+  }
+
+  /* 工具栏允许换行：手机竖屏本来就有纵向空余，
+   * 强行挤成一行横向滚动会让「线条 / 图片 / 打印」藏在屏幕外，等于没有按钮 */
+  .toolbar {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .toolbar button { flex: 0 0 auto; }
+  .toolbar label, .toolbar .hint, .toolbar .val { flex: 0 0 auto; }
+  /* 「打印」独占一行，整条撑满，手指容易按到 */
+  #btn-print {
+    flex: 1 0 100%;
+    order: 99;
+    min-height: 46px;
+    font-size: 16px;
+  }
+
+  /* 竖屏空间富余，画布上下居中比顶在左上角好看；
+   * 缩放已按宽度拟合，正常情况下不会溢出 */
+  .stage-wrap { padding: 10px; align-items: center; }
+  input[type="range"] { width: 84px; }
+  .log { max-height: 62px; font-size: 12px; }
+
+  /* ---- 左侧抽屉：设备 / 打印机信息 / 模板 ---- */
+  .sidebar {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 86vw;
+    max-width: 330px;
+    flex: none;
+    z-index: 60;
+    transform: translateX(-101%);
+    transition: transform 0.22s ease;
+    box-shadow: 0 0 24px rgba(0, 0, 0, 0.12);
+    padding-top: calc(16px + env(safe-area-inset-top));
+    padding-bottom: calc(16px + env(safe-area-inset-bottom));
+  }
+  body.drawer-open .sidebar { transform: none; }
+
+  /* ---- 底部属性面板 ---- */
+  .sheet {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: auto;
+    flex: none;
+    z-index: 55;
+    max-height: 62vh;
+    background: var(--panel);
+    border-top: 1px solid var(--line);
+    border-radius: 14px 14px 0 0;
+    box-shadow: 0 -6px 24px rgba(0, 0, 0, 0.1);
+    transform: translateY(101%);
+    transition: transform 0.22s ease;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  body.sheet-open .sheet { transform: none; }
+
+  .sheet-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px 6px;
+    position: relative;
+  }
+  .sheet-grip {
+    position: absolute;
+    left: 50%;
+    top: 5px;
+    width: 38px;
+    height: 4px;
+    margin-left: -19px;
+    border-radius: 2px;
+    background: #d8d6d0;
+  }
+  .sheet-title { flex: 1 1 auto; font-size: 13px; color: var(--muted); }
+  .sheet-bar button { min-height: 32px; padding: 4px 12px; font-size: 13px; }
+
+  .inspector {
+    max-height: calc(62vh - 48px);
+    padding: 4px 14px 16px;
+    border-left: 0;
+  }
+
+  /* ---- 遮罩 ---- */
+  .scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    background: rgba(20, 20, 20, 0.28);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s;
+  }
+  body.drawer-open .scrim,
+  body.sheet-open .scrim { opacity: 1; pointer-events: auto; }
+}
+
+/* ---- 触屏：手指比鼠标指针粗，所有可点区域先放大一圈 ---- */
+@media (pointer: coarse) {
+  button { min-height: 40px; }
+  input[type="number"], select { min-height: 38px; }
+  .field input, .field select, .field textarea { min-height: 36px; }
+  .row-actions button { min-height: 38px; }
+  input[type="range"] { min-height: 34px; }
+  /* 缩放手柄 9px 手指根本抓不住 */
+  .grip {
+    width: 18px;
+    height: 18px;
+    right: -9px;
+    bottom: -9px;
+    border-radius: 4px;
+  }
+
+  /* 手指一按住，浏览器默认会把随后的移动让给滚动手势，
+   * 于是 pointermove 直接变 pointercancel，元素拖到一半就脱手 ——
+   * 这也是"得长按拖着走"的手感来源。元素框和手柄自己接管触摸。 */
+  .el-box,
+  .grip {
+    touch-action: none;
+  }
+
+  /* 长按弹系统文本选择菜单（放大镜 + 复制/粘贴）在这套界面上纯是噪音。
+   * 桌面保留选中能力（能复制日志），只在触屏上关掉；输入框必须例外，
+   * 否则连改字时挪光标都不行。 */
+  html,
+  body {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+  }
+  input,
+  textarea,
+  select {
+    -webkit-user-select: text;
+    user-select: text;
+  }
+}

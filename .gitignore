@@ -1,0 +1,30 @@
+# ---- 依赖与构建产物（体积大、可重新生成）----
+node_modules/
+dist/
+src-tauri/target/
+*.log
+.DS_Store
+
+# ---- 本机临时物 ----
+blec.json
+_tmp_blec/
+
+# ---- 安卓工程 ----
+# gen/android 里既有 Tauri 自动生成的模板，也有手改过的东西
+# （minSdk 26、状态栏 inset、自适应图标、中文应用名）。
+# 源码要进仓库，否则换台机器 init 出来又退回原样；但下面这些不能进。
+src-tauri/gen/**/build/
+src-tauri/gen/android/.gradle/
+src-tauri/gen/android/.idea/
+src-tauri/gen/android/local.properties
+# 编译好的 .so 是指向 src-tauri/target 的符号链接，没有提交意义
+src-tauri/gen/android/app/src/main/jniLibs/
+
+# ---- 签名密钥：绝对不能进公开仓库 ----
+# 泄露等于别人可以拿你的名义发版，且 Google Play 上无法更换
+*.jks
+*.keystore
+src-tauri/gen/android/keystore.properties
+
+# ---- 打包出来的安装包（要发布走 GitHub Releases，不进 git 历史）----
+release/

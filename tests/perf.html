@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>渲染耗时</title>
+    <style>
+      body { font: 14px Consolas, monospace; padding: 12px; }
+      canvas { border: 1px solid #ddd; }
+    </style>
+  </head>
+  <body>
+    <pre id="out">跑分中…</pre>
+    <canvas id="cv"></canvas>
+    <script type="module">
+      import { BUILTIN_PRESETS } from "/src/core/presets.ts";
+      import { createCache, renderLabel } from "/src/render/render-label.ts";
+
+      const paper = { widthMm: 50, heightMm: 30, dpi: 203, printheadDots: 400 };
+      const cv = document.getElementById("cv");
+      const out = document.getElementById("out");
+      const doc = BUILTIN_PRESETS.find((p) => p.key === "material").build({ ...paper });
+      const cache = createCache();
+
+      // 预热（字体、条码、二维码缓存都建起来）
+      for (let i = 0; i < 3; i++) await renderLabel(cv, doc, cache);
+
+      const N = 30;
+      const t0 = performance.now();
+      for (let i = 0; i < N; i++) await renderLabel(cv, doc, cache);
+      const per = (performance.now() - t0) / N;
+
+      out.textContent = `物料标签（${doc.elements.length} 个元素）平均 ${per.toFixed(1)} ms/帧\n` +
+        `拖拽时按 60fps 算是 16.7ms 预算 → ${per < 16.7 ? "够" : "会掉帧"}`;
+      document.title = `PERF_${per.toFixed(1)}`;
+    </script>
+  </body>
+</html>

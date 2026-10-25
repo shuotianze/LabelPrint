@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>预设模板预览</title>
+    <style>
+      body { margin: 0; padding: 16px; background: #f4f5f7; font: 12px/1.5 "Microsoft YaHei", sans-serif; }
+      .grid { display: flex; flex-wrap: wrap; gap: 14px; }
+      .cell { background: #fff; border: 1px solid #dcdfe6; border-radius: 6px; padding: 8px; }
+      .cell h3 { margin: 0 0 6px; font-size: 12px; font-weight: 600; color: #333; }
+      /* 画布是 400 点、这里缩到 288px 显示，用平滑缩放；
+       * 用 pixelated 会按最近邻丢像素，小字被抽掉几列，看着像"乱码"。 */
+      canvas { display: block; }
+    </style>
+  </head>
+  <body>
+    <div class="grid" id="grid"></div>
+    <script type="module">
+      import { BUILTIN_PRESETS } from "/src/core/presets.ts";
+      import { renderLabel } from "/src/render/render-label.ts";
+
+      const q = new URLSearchParams(location.search);
+      const paper = {
+        widthMm: Number(q.get("w")) || 50,
+        heightMm: Number(q.get("h")) || 30,
+        dpi: 203,
+        printheadDots: 400,
+      };
+      const grid = document.getElementById("grid");
+      for (const p of BUILTIN_PRESETS) {
+        const cell = document.createElement("div");
+        cell.className = "cell";
+        const h = document.createElement("h3");
+        h.textContent = p.label;
+        const cv = document.createElement("canvas");
+        cell.append(h, cv);
+        grid.appendChild(cell);
+        await renderLabel(cv, p.build({ ...paper }));
+        /* 尺寸必须在渲染之后再写：renderLabel 会把画布改成 400 点宽，
+         * 提前写 style.width 拿到的是默认的 300，画布被浏览器缩着显示，
+         * 小字会被重采样削掉几行，看着像"明文被切了一半"。 */
+        cv.style.width = `${cv.width}px`; // 1:1 显示，点阵不被浏览器重采样
+      }
+      document.title = "PRESETS_RENDERED";
+    </script>
+  </body>
+</html>

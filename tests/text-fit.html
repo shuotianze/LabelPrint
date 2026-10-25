@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>文字装框检查</title>
+    <style>
+      body { margin: 0; padding: 12px; font: 12px/1.5 Consolas, monospace; background: #fff; }
+      table { border-collapse: collapse; }
+      td, th { border: 1px solid #ccc; padding: 2px 6px; text-align: right; }
+      th { background: #f2f2f2; }
+      .bad { color: #c00; font-weight: 700; }
+    </style>
+  </head>
+  <body>
+    <div id="out">measuring…</div>
+    <script type="module">
+      import { BUILTIN_PRESETS } from "/src/core/presets.ts";
+
+      const paper = { widthMm: 50, heightMm: 30, dpi: 203, printheadDots: 400 };
+      const ppm = 203 / 25.4;
+
+      const rows = [];
+      let bad = 0;
+
+      for (const preset of BUILTIN_PRESETS) {
+        const doc = preset.build({ ...paper });
+        for (const el of doc.elements) {
+          if (el.type !== "text") continue;
+          const c = document.createElement("canvas");
+          c.width = 8;
+          c.height = 8;
+          const g = c.getContext("2d");
+          const px = el.fontSizeMm * ppm;
+          g.font = `${el.bold ? "bold " : ""}${px}px "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif`;
+
+          const boxW = el.w * ppm;
+          const boxH = el.h * ppm;
+
+          // 复刻渲染器的折行：英数串整体不拆，其余逐字累加
+          const isWordChar = (c) => /[0-9A-Za-z.+\-×*#/]/.test(c);
+          const lines = [];
+          for (const raw of el.text.split("\n")) {
+            if (!el.wrap) {
+              lines.push(raw);
+              continue;
+            }
+            const tokens = [];
+            let buf = "";
+            for (const ch of raw) {
+              if (isWordChar(ch)) buf += ch;
+              else {
+                if (buf) { tokens.push(buf); buf = ""; }
+                tokens.push(ch);
+              }
+            }
+            if (buf) tokens.push(buf);
+            let cur = "";
+            for (const tk of tokens) {
+              if (g.measureText(cur + tk).width > boxW && cur !== "") {
+                lines.push(cur.replace(/\s+$/, ""));
+                cur = "";
+              }
+              const piece = cur === "" ? tk.replace(/^\s+/, "") : tk;
+              if (piece === "") continue;
+              cur += piece;
+            }
+            if (cur !== "") lines.push(cur.replace(/\s+$/, ""));
+          }
+          let maxW = 0;
+          let maxInk = 0;
+          for (const ln of lines) {
+            const m = g.measureText(ln);
+            maxW = Math.max(maxW, m.width);
+            maxInk = Math.max(
+              maxInk,
+              (m.actualBoundingBoxLeft || 0) + (m.actualBoundingBoxRight || 0)
+            );
+          }
+          const lineH = px * el.lineHeight;
+          const blockH = lines.length * lineH;
+          const overW = Math.max(maxW, maxInk) - boxW;
+          const overH = blockH - boxH;
+          const isBad = overW > 0.5 || overH > 0.5;
+          if (isBad) bad++;
+          rows.push({
+            preset: preset.key,
+            text: el.text.replace(/\n/g, "⏎").slice(0, 22),
+            font: el.fontSizeMm.toFixed(2),
+            box: `${boxW.toFixed(0)}×${boxH.toFixed(0)}`,
+            ink: `${maxInk.toFixed(0)}×${blockH.toFixed(0)}`,
+            lines: lines.length,
+            overW: overW.toFixed(1),
+            overH: overH.toFixed(1),
+            bad: isBad,
+          });
+        }
+      }
+
+      const html = [
+        `<p>${bad} 处超框 / 共 ${rows.length} 个文字元素</p>`,
+        "<table><tr><th>模板</th><th>文字</th><th>字号mm</th><th>框(点)</th><th>墨迹(点)</th><th>行</th><th>超宽</th><th>超高</th></tr>",
+        ...rows.map(
+          (r) =>
+            `<tr class="${r.bad ? "bad" : ""}"><td>${r.preset}</td><td style="text-align:left">${r.text}</td><td>${r.font}</td><td>${r.box}</td><td>${r.ink}</td><td>${r.lines}</td><td>${r.overW}</td><td>${r.overH}</td></tr>`
+        ),
+        "</table>",
+      ].join("");
+      document.getElementById("out").innerHTML = html;
+      document.title = `BAD=${bad}`;
+    </script>
+  </body>
+</html>

@@ -1,0 +1,475 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>编辑器冒烟测试</title>
+    <style>
+      body { font: 13px/1.7 Consolas, monospace; padding: 16px; }
+      .ok { color: #1d9e75; }
+      .ng { color: #c0392b; }
+      #stage-box { width: 420px; height: 300px; overflow: auto; }
+      #inspector { width: 260px; }
+    </style>
+  </head>
+  <body>
+    <h1>编辑器冒烟测试</h1>
+    <div id="out"></div>
+
+    <!-- 编辑器需要真实 DOM 环境，所以用真浏览器跑，不用 jsdom -->
+    <div id="stage-box">
+      <div class="stage">
+        <canvas id="preview"></canvas>
+        <div class="overlay" id="overlay"></div>
+      </div>
+    </div>
+    <div id="inspector"></div>
+
+    <!-- 脚本一旦抛异常，页面会静默停在中途，看起来像"测试没跑完"。
+         这里把错误也打成一个 FAIL，报错位置直接写在页面上。 -->
+    <script>
+      const showError = (msg) => {
+        const d = document.createElement("div");
+        d.className = "ng";
+        d.textContent = `ERROR  ${msg}`;
+        document.getElementById("out").appendChild(d);
+        document.title = "SMOKE_ERROR";
+      };
+      window.addEventListener("error", (e) => showError(`${e.message} @${e.lineno}:${e.colno}`));
+      window.addEventListener("unhandledrejection", (e) => showError(String(e.reason && e.reason.stack || e.reason)));
+    </script>
+
+    <script type="module">
+      import { LabelEditor } from "/src/ui/editor.ts";
+      import { createText, emptyDoc, sampleDoc } from "/src/core/label-doc.ts";
+      import { BUILTIN_PRESETS } from "/src/core/presets.ts";
+      import { centerAlign, centerOf, containerOf } from "/src/core/align.ts";
+      import { canvasSizeOf, printableDotsOf, renderLabel } from "/src/render/render-label.ts";
+
+      const out = document.getElementById("out");
+      let pass = 0;
+      let fail = 0;
+
+      /** 数出 canvas 里黑色像素的外接框，用来验证"视觉居中" */
+      function inkBox(cv) {
+        const g = cv.getContext("2d");
+        const { data } = g.getImageData(0, 0, cv.width, cv.height);
+        let minX = 1e9, minY = 1e9, maxX = -1, maxY = -1;
+        for (let y = 0; y < cv.height; y++) {
+          for (let x = 0; x < cv.width; x++) {
+            if (data[(y * cv.width + x) * 4] < 128) {
+              if (x < minX) minX = x;
+              if (x > maxX) maxX = x;
+              if (y < minY) minY = y;
+              if (y > maxY) maxY = y;
+            }
+          }
+        }
+        if (maxX < 0) return null;
+        return { minX, minY, maxX, maxY, cx: (minX + maxX) / 2, cy: (minY + maxY) / 2 };
+      }
+
+      function check(name, cond, detail = "") {
+        const line = document.createElement("div");
+        line.className = cond ? "ok" : "ng";
+        line.textContent = `${cond ? "PASS" : "FAIL"}  ${name}${detail ? "  — " + detail : ""}`;
+        out.appendChild(line);
+        cond ? pass++ : fail++;
+      }
+
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+      // 50×30 实测可打满（400 点 @203dpi），这是 App 的默认纸型
+      const paper = { widthMm: 50, heightMm: 30, dpi: 203, printheadDots: 400 };
+
+      const editor = new LabelEditor({
+        canvas: document.getElementById("preview"),
+        overlay: document.getElementById("overlay"),
+        inspector: document.getElementById("inspector"),
+        doc: sampleDoc({ ...paper }),
+        hooks: { pickImage: async () => null, notify: () => {} },
+      });
+
+      await wait(300);
+
+      // 1. 示例模板应该画出 5 个元素框
+      const boxes = document.querySelectorAll(".el-box");
+      check("示例模板渲染 5 个元素框", boxes.length === 5, `实际 ${boxes.length}`);
+
+      // 2. 画布尺寸 = 打印头点数 × 纸高换算
+      const cv = document.getElementById("preview");
+      const size = canvasSizeOf(editor.getDoc());
+      check("画布尺寸正确", cv.width === size.width && cv.height === size.height,
+        `${cv.width}×${cv.height} vs ${size.width}×${size.height}`);
+      check("纸高 30mm @203dpi = 240 点", cv.height === 240, String(cv.height));
+
+      // 3. 加一个文字元素
+      editor.add("text");
+      await wait(200);
+      check("添加文字元素", editor.getDoc().elements.length === 6, String(editor.getDoc().elements.length));
+      check("新元素自动选中", !!editor.selected(), editor.selected()?.type ?? "无");
+      check("选中后属性面板有输入框",
+        document.querySelectorAll("#inspector input, #inspector textarea, #inspector select").length > 3,
+        String(document.querySelectorAll("#inspector input, #inspector textarea, #inspector select").length));
+
+      // 4. 加条码 / 二维码
+      editor.add("barcode");
+      editor.add("qrcode");
+      await wait(300);
+      check("添加条码+二维码", editor.getDoc().elements.length === 8, String(editor.getDoc().elements.length));
+
+      // 5. 改纸张高度，画布要跟着变
+      editor.setPaperSize({ heightMm: 40 });
+      await wait(200);
+      const cv2 = document.getElementById("preview");
+      check("纸高 30→40mm 画布重算", cv2.height === Math.round((40 * 203) / 25.4), String(cv2.height));
+
+      // 6. 删除元素
+      const before = editor.getDoc().elements.length;
+      const target = editor.getDoc().elements[0];
+      editor.remove(target.id);
+      await wait(150);
+      check("删除元素", editor.getDoc().elements.length === before - 1);
+
+      // 7. 图层顺序
+      const firstId = editor.getDoc().elements[0].id;
+      editor.moveLayer(firstId, 1);
+      await wait(150);
+      check("图层上移", editor.getDoc().elements[1].id === firstId);
+
+      // 8. 序列化往返（保存模板要用）
+      const json = JSON.stringify(editor.getDoc());
+      const back = JSON.parse(json);
+      check("序列化往返一致", JSON.stringify(back.elements) === JSON.stringify(editor.getDoc().elements));
+
+      // 9. 切空白文档
+      editor.setDoc(emptyDoc({ ...paper }));
+      await wait(200);
+      check("空白文档元素清空", document.querySelectorAll(".el-box").length === 0);
+      check("空白文档画布 400×240", cv2.width === 400 && cv2.height === 240, `${cv2.width}×${cv2.height}`);
+
+      // 10. 缩放不影响打印点数
+      editor.setZoom(0.5);
+      await wait(150);
+      check("缩放只改 CSS 尺寸", cv2.width === 400 && cv2.style.width === "200px", cv2.style.width);
+
+      // 11. 文字默认上下左右居中
+      const t = createText({ x: 5, y: 5, w: 20, h: 12, text: "居中", fontSizeMm: 3.5 });
+      check("新建文字默认水平居中", t.align === "center", t.align);
+      check("新建文字默认垂直居中", t.valign === "middle", t.valign);
+
+      editor.setZoom(1);
+      editor.setDoc({ version: 1, name: "居中测试", paper: { ...paper }, elements: [t] });
+      await wait(300);
+
+      // 直接数像素：文字墨迹的外接框中心，应该和外框中心重合
+      const ink = inkBox(document.getElementById("preview"));
+      const ppm = 203 / 25.4;
+      const cx = (t.x + t.w / 2) * ppm;
+      const cy = (t.y + t.h / 2) * ppm;
+      check("墨迹存在", !!ink, ink ? `${ink.minX},${ink.minY}-${ink.maxX},${ink.maxY}` : "无");
+      if (ink) {
+        check("水平居中（偏差 < 1 点）", Math.abs(ink.cx - cx) < 1, `偏差 ${(ink.cx - cx).toFixed(2)} 点`);
+        // 字身内部有 ascent/descent 的天然不对称，3 个点以内就算居中
+        check("垂直居中（偏差 < 3 点）", Math.abs(ink.cy - cy) < 3, `偏差 ${(ink.cy - cy).toFixed(2)} 点`);
+      }
+
+      // 12. 纸张宽度：默认 50mm 打满，切到 384 点才出现"打不到"，输入框不能被重建
+      editor.setDoc(emptyDoc({ ...paper }));
+      await wait(200);
+      check("默认可打印宽度 50mm（400 点 @203dpi）", editor.maxWidthMm() === 50, String(editor.maxWidthMm()));
+
+      const wIn = document.querySelectorAll("#inspector input[type=number]")[0];
+      const hIn = document.querySelectorAll("#inspector input[type=number]")[1];
+      wIn.focus();
+      wIn.value = "50";
+      wIn.dispatchEvent(new Event("input", { bubbles: true }));
+      await wait(200);
+      check("纸宽可以设成 50", editor.getDoc().paper.widthMm === 50, String(editor.getDoc().paper.widthMm));
+      check(
+        "画布宽度 400 点（50mm 打满）",
+        document.getElementById("preview").width === 400,
+        String(document.getElementById("preview").width)
+      );
+      check("50mm 纸不出现「打不到」区域", !document.querySelector(".dead-zone"));
+      const wInAfter = document.querySelectorAll("#inspector input[type=number]")[0];
+      check(
+        "改宽度后输入框未被重建（焦点不丢）",
+        wInAfter === wIn && document.activeElement === wIn,
+        wInAfter === wIn ? "同一个节点" : "被替换了"
+      );
+
+      // 切到机型表的 384 点口径，50mm 纸右侧应出现斜纹死区
+      editor.setPaperSize({ printheadDots: 384 });
+      await wait(200);
+      check("切到 384 点后出现「打不到」斜纹", !!document.querySelector(".dead-zone"));
+      check("384 点时可打印宽 48mm", editor.maxWidthMm() === 48, String(editor.maxWidthMm()));
+
+      editor.setPaperSize({ printheadDots: 400 });
+      await wait(150);
+      wIn.value = "40";
+      wIn.dispatchEvent(new Event("input", { bubbles: true }));
+      await wait(200);
+      check("纸宽改回 40 时斜纹区消失", !document.querySelector(".dead-zone"));
+
+      hIn.focus();
+      hIn.value = "31";
+      hIn.dispatchEvent(new Event("input", { bubbles: true }));
+      await wait(150);
+      check("高度可以正常改", editor.getDoc().paper.heightMm === 31, String(editor.getDoc().paper.heightMm));
+
+      /* 12b. 48 与 50 必须打出不同的东西。
+       * 老代码的 bug：位图宽度恒等于打印头点数（400），
+       * 纸宽 48 和 50 发出去的是同一张 400 点位图 → 参数改了等于没改。 */
+      editor.setDoc(emptyDoc({ ...paper }));
+      await wait(200);
+      check("纸宽 50mm → 位图 400 点", printableDotsOf(editor.getDoc().paper) === 400,
+        String(printableDotsOf(editor.getDoc().paper)));
+      editor.setPaperSizeScaled(48, 30);
+      await wait(200);
+      check("纸宽 48mm → 位图 384 点（与 50 不同）",
+        printableDotsOf(editor.getDoc().paper) === 384 &&
+          document.getElementById("preview").width === 384,
+        `${printableDotsOf(editor.getDoc().paper)} / 画布 ${document.getElementById("preview").width}`);
+
+      // 12c. 换纸型时内容要跟着缩放，否则两种纸型的排版一模一样
+      const sTxt = createText({ x: 2, y: 2, w: 20, h: 6, text: "缩放", fontSizeMm: 2 });
+      editor.setDoc({ version: 1, name: "缩放", paper: { ...paper }, elements: [sTxt] });
+      await wait(200);
+      editor.setPaperSizeScaled(40, 30); // 50 → 40，比例 0.8
+      await wait(200);
+      const sEl = editor.getDoc().elements[0];
+      check("换纸型后坐标按比例缩放", Math.abs(sEl.x - 1.6) < 0.11 && Math.abs(sEl.w - 16) < 0.11,
+        `x=${sEl.x} w=${sEl.w}`);
+      check("换纸型后字号跟着缩", Math.abs(sEl.fontSizeMm - 1.6) < 0.11, String(sEl.fontSizeMm));
+
+      // 12c-2 纸型下拉走的是同一条路（DOM 事件也要通，别只测方法）
+      editor.setDoc(emptyDoc({ ...paper }));
+      await wait(200);
+      const presetSel = document.querySelector("#inspector select");
+      presetSel.value = "48x30";
+      presetSel.dispatchEvent(new Event("change", { bubbles: true }));
+      await wait(250);
+      check(
+        "下拉选 48×30 → 纸宽 48、位图 384",
+        editor.getDoc().paper.widthMm === 48 &&
+          document.getElementById("preview").width === 384,
+        `${editor.getDoc().paper.widthMm}mm / ${document.getElementById("preview").width}点`
+      );
+
+      // 12c-3 手输宽度：打字时只改纸，失焦（change）才缩放内容
+      const sTxt2 = createText({ x: 5, y: 5, w: 20, h: 8, text: "手输", fontSizeMm: 2 });
+      editor.setDoc({ version: 1, name: "手输", paper: { ...paper }, elements: [sTxt2] });
+      await wait(200);
+      const wIn2 = document.querySelectorAll("#inspector input[type=number]")[0];
+      wIn2.focus();
+      wIn2.value = "40";
+      wIn2.dispatchEvent(new Event("input", { bubbles: true }));
+      await wait(150);
+      check("打字时只改纸宽、不动内容", Math.abs(editor.getDoc().elements[0].w - 20) < 0.01,
+        `w=${editor.getDoc().elements[0].w}`);
+      wIn2.dispatchEvent(new Event("change", { bubbles: true }));
+      await wait(200);
+      check("回车/失焦后按新纸宽缩放", Math.abs(editor.getDoc().elements[0].w - 16) < 0.11,
+        `w=${editor.getDoc().elements[0].w}`);
+
+      // 12d. 落墨：画布必须是纯黑白，不能留抗锯齿灰边（粗体发虚的根因）
+      const inkCv = document.getElementById("preview");
+      const inkData = inkCv.getContext("2d").getImageData(0, 0, inkCv.width, inkCv.height).data;
+      let gray = 0;
+      let black = 0;
+      for (let i = 0; i < inkData.length; i += 4) {
+        if (inkData[i] !== 0 && inkData[i] !== 255) gray++;
+        else if (inkData[i] === 0) black++;
+      }
+      check("画布是纯 1 位图（无灰边）", gray === 0, `${gray} 个灰像素`);
+      check("文字确实画上了（有黑点）", black > 0, `${black} 个黑点`);
+
+      /* 12e. 以中间点为基准：宽 30 和宽 50 的元件必须共用同一条中心线。
+       * 公式：left = 中心 - 宽/2，right = left + 宽。
+       * 容器 50、中心 25 → 宽 30：左 10 右 40；宽 50：左 0 右 50。 */
+      const a30 = centerAlign({ widthMm: 30 });
+      const a50 = centerAlign({ widthMm: 50 });
+      check("默认容器 50mm / 中心 25mm", a30.containerMm === 50 && a30.centerX === 25,
+        `${a30.containerMm} / ${a30.centerX}`);
+      check("宽 30 → 左 10 / 右 40", a30.left === 10 && a30.right === 40,
+        `左 ${a30.left} 右 ${a30.right}`);
+      check("宽 50 → 左 0 / 右 50", a50.left === 0 && a50.right === 50,
+        `左 ${a50.left} 右 ${a50.right}`);
+      check("宽 30 与宽 50 中心 X 完全一致", a30.centerX === a50.centerX,
+        `${a30.centerX} vs ${a50.centerX}`);
+
+      const clampLeft = centerAlign({ widthMm: 30, centerMm: 2 });
+      check("贴左边时中心被夹到 15mm", clampLeft.centerX === 15 && clampLeft.left === 0 && clampLeft.shifted,
+        `cx=${clampLeft.centerX} left=${clampLeft.left}`);
+      const tooWide = centerAlign({ widthMm: 60 });
+      check("宽度超过容器时左右对称溢出 10mm",
+        tooWide.left === -5 && tooWide.right === 55 && tooWide.overflowMm === 10,
+        `左 ${tooWide.left} 右 ${tooWide.right} 溢出 ${tooWide.overflowMm}`);
+      check("留边 1mm 时中心仍是 25", centerAlign({ widthMm: 30, gutterMm: 1 }).centerX === 25);
+      check("纸 50mm @400 点 → 容器 50mm", containerOf(paper) === 50, String(containerOf(paper)));
+
+      // 12f. 编辑器里改宽度要守住中心（不是往右长）
+      const cTxt = createText({ x: 10, y: 5, w: 30, h: 8, text: "中心", fontSizeMm: 2 });
+      editor.setDoc({ version: 1, name: "中心", paper: { ...paper }, elements: [cTxt] });
+      // setDoc 会清空选中，属性面板里就没有元素字段了，得重新选上
+      editor.select(cTxt.id);
+      await wait(250);
+
+      /* 只在"元素属性"区里找，别拿到上面纸张区的同名输入框（纸也有"宽"） */
+      const fieldOf = (label) =>
+        Array.from(document.querySelectorAll("#inspector .fields .field")).find(
+          (f) => f.querySelector("span")?.textContent === label
+        )?.querySelector("input, select, textarea");
+
+      const wField = fieldOf("宽");
+      wField.focus();
+      wField.value = "50";
+      wField.dispatchEvent(new Event("input", { bubbles: true }));
+      await wait(200);
+      const grown = editor.getDoc().elements[0];
+      check("改宽 30→50 后中心仍是 25mm",
+        Math.abs(centerOf(grown) - 25) < 0.06 && Math.abs(grown.x) < 0.06,
+        `x=${grown.x} 中心=${centerOf(grown)}`);
+
+      wField.value = "30";
+      wField.dispatchEvent(new Event("input", { bubbles: true }));
+      await wait(200);
+      const shrunk = editor.getDoc().elements[0];
+      check("改宽 50→30 后左边回到 10mm、右边回到 40mm",
+        Math.abs(shrunk.x - 10) < 0.06 && Math.abs(shrunk.x + shrunk.w - 40) < 0.12,
+        `x=${shrunk.x} 右边=${shrunk.x + shrunk.w}`);
+
+      const cxField = fieldOf("中心 X");
+      cxField.focus();
+      cxField.value = "20";
+      cxField.dispatchEvent(new Event("input", { bubbles: true }));
+      await wait(200);
+      const moved = editor.getDoc().elements[0];
+      check("改中心 20 → 左边界 5mm（宽 30）",
+        Math.abs(moved.x - 5) < 0.06 && Math.abs(centerOf(moved) - 20) < 0.06,
+        `x=${moved.x} 中心=${centerOf(moved)}`);
+
+      const centerBtn = Array.from(document.querySelectorAll("#inspector button")).find(
+        (b) => b.textContent === "水平居中"
+      );
+      centerBtn.click();
+      await wait(200);
+      const centered = editor.getDoc().elements[0];
+      check("「水平居中」把中心对回 25mm",
+        Math.abs(centerOf(centered) - 25) < 0.06,
+        `中心=${centerOf(centered)}`);
+
+      // 新建文字默认也是"宽 30、中心对准纸中心"
+      editor.setDoc(emptyDoc({ ...paper }));
+      await wait(200);
+      editor.add("text");
+      await wait(200);
+      const fresh = editor.selected();
+      check("新建文字默认中心 25mm、宽 30",
+        !!fresh && Math.abs(centerOf(fresh) - 25) < 0.06 && Math.abs(fresh.w - 30) < 0.06,
+        fresh ? `x=${fresh.x} w=${fresh.w}` : "无");
+
+      // 12g. 默认模板最小字号（50×30 上不该出现 2.0mm 以下的字）
+      const tiny = [];
+      for (const p of BUILTIN_PRESETS) {
+        const d = p.build({ ...paper });
+        for (const el of d.elements) {
+          if (el.type === "text" && el.fontSizeMm < 2.0) tiny.push(`${p.label}:${el.fontSizeMm}`);
+          if (el.type === "barcode" && el.textSizeMm < 2.0) tiny.push(`${p.label}:码文${el.textSizeMm}`);
+        }
+      }
+      check("模板里没有小于 2.0mm 的字", tiny.length === 0, tiny.slice(0, 4).join(" "));
+
+      // 13. 内置模板：全部能画出来，且元素不越界
+      for (const p of BUILTIN_PRESETS) {
+        editor.setDoc(p.build({ ...paper }));
+        await wait(160);
+        const d = editor.getDoc();
+        const out = d.elements.filter(
+          (e) =>
+            e.x < -0.01 ||
+            e.y < -0.01 ||
+            e.x + e.w > d.paper.widthMm + 0.3 ||
+            e.y + e.h > d.paper.heightMm + 0.3
+        );
+        check(
+          `模板「${p.label}」${d.elements.length} 个元素不越界`,
+          out.length === 0,
+          out.map((e) => `${e.type}@${e.x},${e.y}`).join(" ")
+        );
+
+        /* 分隔线不能穿过文字：这是「批次」那行被线划掉的真实 bug。
+         * 判断依据是矩形相交，两个元素只要有 0.2mm 以上的重叠就算失败。 */
+        const texts = d.elements.filter((e) => e.type === "text");
+        const lines = d.elements.filter((e) => e.type === "line");
+        const cross = [];
+        for (const t of texts) {
+          for (const l of lines) {
+            const ox = Math.min(t.x + t.w, l.x + l.w) - Math.max(t.x, l.x);
+            const oy = Math.min(t.y + t.h, l.y + l.h) - Math.max(t.y, l.y);
+            if (ox > 0.4 && oy > 0.2) cross.push(`${l.y}mm 线穿过文字`);
+          }
+        }
+        check(`模板「${p.label}」分隔线不压文字`, cross.length === 0, cross.join(" "));
+      }
+
+      // 14. 新增模板的关键构件齐全
+      const partsPreset = BUILTIN_PRESETS.find((p) => p.key === "parts");
+      const partsDoc = partsPreset ? partsPreset.build({ ...paper }) : { elements: [] };
+      check(
+        "配件发货单广告位无边框（口号 + 二维码）",
+        partsDoc.elements.filter((e) => e.type === "rect").length === 0 &&
+          partsDoc.elements.filter((e) => e.type === "qrcode").length === 1 &&
+          partsDoc.elements.some((e) => e.type === "text" && e.text.includes("朔有趣")),
+        `${partsDoc.elements.length} 个元素`
+      );
+      const repairPreset = BUILTIN_PRESETS.find((p) => p.key === "repair");
+      const repairDoc = repairPreset ? repairPreset.build({ ...paper }) : { elements: [] };
+      check(
+        "设备维修标签去掉条码（二维码 + 八项信息）",
+        repairDoc.elements.filter((e) => e.type === "text").length >= 7 &&
+          !repairDoc.elements.some((e) => e.type === "barcode") &&
+          repairDoc.elements.some((e) => e.type === "qrcode"),
+        `${repairDoc.elements.length} 个元素`
+      );
+      check("内置模板共 12 套", BUILTIN_PRESETS.length === 12, String(BUILTIN_PRESETS.length));
+
+      /* 12i. 条码明文不能被切底。
+       * 老实现把明文交给 JsBarcode，它把基线放在画布最底边，
+       * 数字下半截正好出界——打出来是"只剩上半个字"。
+       * 现在明文走自己的文字管线，条码框最底部还应该有墨。 */
+      {
+        const matPreset = BUILTIN_PRESETS.find((p) => p.key === "material");
+        const bcDoc = matPreset.build({ ...paper });
+        const bcEl = bcDoc.elements.find((e) => e.type === "barcode");
+        const ppm = paper.dpi / 25.4;
+        const cv = document.createElement("canvas");
+        await renderLabel(cv, bcDoc);
+        if (!bcEl) {
+          check("物料标签有条码", false, "没有条码元素");
+        } else {
+          const x0 = Math.round(bcEl.x * ppm);
+          const y0 = Math.round(bcEl.y * ppm);
+          const bw = Math.round(bcEl.w * ppm);
+          const bh = Math.round(bcEl.h * ppm);
+          const data = cv.getContext("2d").getImageData(x0, y0, bw, bh).data;
+          let bottomInk = 0;
+          for (let y = bh - 3; y < bh; y++) {
+            for (let x = 0; x < bw; x++) if (data[(y * bw + x) * 4] < 128) bottomInk++;
+          }
+          check(
+            "条码明文没被切底（框底 3 行仍有墨）",
+            bottomInk > bw * 0.05,
+            `底部墨点 ${bottomInk} / 框宽 ${bw}`
+          );
+        }
+      }
+
+      const summary = document.createElement("h2");
+      summary.textContent = `结果：${pass} 通过 / ${fail} 失败`;
+      summary.style.color = fail === 0 ? "#1d9e75" : "#c0392b";
+      out.prepend(summary);
+      document.title = fail === 0 ? `SMOKE_ALL_PASS_${pass}` : `SMOKE_FAIL_${fail}`;
+    </script>
+  </body>
+</html>

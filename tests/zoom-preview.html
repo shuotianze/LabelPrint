@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>2x 检查</title>
+    <style>
+      body { margin: 0; padding: 12px; background: #f4f5f7; font: 12px/1.5 "Microsoft YaHei", sans-serif; }
+      .row { display: flex; flex-wrap: wrap; gap: 12px; }
+      .cell { background: #fff; border: 1px solid #dcdfe6; padding: 6px; }
+      .cell h3 { margin: 0 0 4px; font-size: 11px; }
+      canvas { display: block; image-rendering: pixelated; }
+    </style>
+  </head>
+  <body>
+    <div class="row" id="grid"></div>
+    <pre id="log"></pre>
+    <script type="module">
+      import { BUILTIN_PRESETS } from "/src/core/presets.ts";
+      import { renderLabel } from "/src/render/render-label.ts";
+
+      const q = new URLSearchParams(location.search);
+      const paper = { widthMm: Number(q.get("w")) || 50, heightMm: Number(q.get("h")) || 30, dpi: 203, printheadDots: 400 };
+      const only = q.get("only");
+      const grid = document.getElementById("grid");
+      for (const p of BUILTIN_PRESETS) {
+        if (only && p.key !== only) continue;
+        const cell = document.createElement("div");
+        cell.className = "cell";
+        const h = document.createElement("h3");
+        h.textContent = p.label;
+        const cv = document.createElement("canvas");
+        cv.style.width = "768px";
+        cell.append(h, cv);
+        grid.appendChild(cell);
+        await renderLabel(cv, p.build({ ...paper }));
+      }
+      document.title = "ZOOM_OK";
+    </script>
+  </body>
+</html>

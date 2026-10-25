@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>手机布局预览</title>
+    <style>
+      /* 只用来在桌面上用 390×844 的 iframe 模拟手机，
+         无头浏览器有最小窗口宽度限制，直接设窗口宽度量不准 */
+      body {
+        margin: 0;
+        background: #7a7a7a;
+        display: flex;
+        gap: 20px;
+        padding: 14px;
+        font: 13px system-ui;
+      }
+      figure { margin: 0; }
+      figcaption { color: #fff; padding: 4px 0; }
+      iframe {
+        width: 390px;
+        height: 844px;
+        border: 0;
+        background: #fff;
+        box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+        display: block;
+      }
+      /* 第二台"手机"用来展示选中元素后的底部属性面板 */
+      #b { display: none; }
+    </style>
+  </head>
+  <body>
+    <figure>
+      <figcaption>390×844</figcaption>
+      <iframe id="a" src="/"></iframe>
+    </figure>
+    <figure id="b">
+      <figcaption>选中元素 → 底部面板</figcaption>
+      <iframe id="c" src="/"></iframe>
+    </figure>
+    <script type="module">
+      // 让第二台自动选中第一个元素，方便截图看底部属性面板
+      const f = document.getElementById("c");
+      f.addEventListener("load", () => {
+        const w = f.contentWindow;
+        setTimeout(() => {
+          const box = w.document.querySelector(".el-box");
+          if (box) box.dispatchEvent(new w.PointerEvent("pointerdown", { bubbles: true }));
+        }, 600);
+      });
+      if (new URLSearchParams(location.search).has("two")) {
+        document.getElementById("b").style.display = "block";
+      }
+    </script>
+  </body>
+</html>

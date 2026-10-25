@@ -29,3 +29,6 @@ src-tauri/gen/android/keystore.properties
 
 # ---- 打包出来的安装包（要发布走 GitHub Releases，不进 git 历史）----
 release/
+
+# 发版时生成的临时 JSON，别提交
+.release_*

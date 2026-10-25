@@ -3,6 +3,9 @@
 自己做的标签打印工具，支持 NIIMBOT 系列热敏标签机（B1 / B21 / D110 / H1S）。
 Windows / macOS / Linux / Android 一套代码，界面和业务逻辑全部自研。
 
+**下载安装包** → [Releases](https://github.com/shuotianze/LabelPrint/releases/latest)
+（Windows 安装器 / 免安装 exe / Android APK，不用自己编译）
+
 ![界面](docs/screenshot.png)
 
 ## 为什么这么选

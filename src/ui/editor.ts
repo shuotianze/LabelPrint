@@ -239,11 +239,11 @@ export class LabelEditor {
   }
 
   /**
-   * 把整个舞台缩放到刚好放进 pxW × pxH 的框里（手机单屏用）。
-   * 宽度取"画布宽"和"纸宽"的较大者：纸比打印头宽时右侧还有斜纹区，
-   * 只按画布算会让斜纹条顶出屏幕。
-   * 高度也要算：手机竖屏能给的纵向空间有限，只按宽度拟合的话
-   * 长标签会把页面撑出屏幕，得靠滚动才能看全。
+   * 手机预览的缩放：以"横向填满预览区"为基准再放大 1.4 倍。
+   * 只按"整张塞进屏幕"算出来的比例太小（50×30 的标签只有约 0.85 倍），
+   * 小字根本点不中；放大后超出预览卡片的部分由卡片内部滚动承担，
+   * 页面本身仍然不滚。上限 2 倍，再大手柄和文字就蠢了。
+   * 宽度取"画布宽"和"纸宽"的较大者：纸比打印头宽时右侧还有斜纹区。
    */
   fitToBox(pxW: number, pxH: number) {
     if (!(pxW > 0) || !(pxH > 0)) return;
@@ -251,8 +251,11 @@ export class LabelEditor {
     const paperDots = this.doc.paper.widthMm * dotsPerMm(this.doc.paper.dpi);
     const naturalW = Math.max(width, paperDots);
     if (!naturalW || !height) return;
-    // 取两个方向里更紧的那个比例，整张标签才都塞得下
-    const z = Math.min(3, Math.max(0.2, Math.min(pxW / naturalW, pxH / height)));
+    // 横向填满 × 1.4；极端小屏（或超宽纸）算出来太小时退回"整页放下"
+    const z = Math.min(
+      2,
+      Math.max(0.2, Math.max((pxW / naturalW) * 1.4, Math.min(pxW / naturalW, pxH / height))),
+    );
     // 避免 0.001 级的抖动反复触发重绘
     if (Math.abs(z - this.zoom) < 0.01) return;
     this.setZoom(z);

@@ -1,7 +1,7 @@
 {
   "name": "labelprint",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "description": "跨平台标签打印机 App（NIIMBOT B1/B21/D110 系列）",
   "scripts": {

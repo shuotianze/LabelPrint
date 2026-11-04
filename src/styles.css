@@ -536,7 +536,8 @@ input[type="range"] {
   }
   header h1 { font-size: 17px; font-weight: 600; }
 
-  /* 手机上一屏放完：页面本身不滚动，画布按"能用的宽 × 能用的高"自动缩放 */
+  /* 手机上页面本身不滚动；画布按"能用的宽 × 1.4"放大，
+   * 放不下的部分只在预览卡片内部滚（编辑小字需要更大的显示比例） */
   main {
     display: flex;
     flex-direction: column;
@@ -556,20 +557,23 @@ input[type="range"] {
   /* 桌面工具栏整块隐藏，功能都在 add-bar 和 dock 里 */
   .toolbar { display: none; }
 
-  /* 预览是一张白卡片，占满剩余高度；里面的画布由编辑器按这个框缩放 */
+  /* 预览是一张白卡片，占满剩余高度；里面的画布由编辑器按这个框缩放。
+   * 画布放大到比卡片大时，卡片自己内部滚动（页面不滚）；
+   * 居中靠子元素 margin:auto 而不是 align/justify——
+   * 否则内容超出时顶部会被裁掉还滚不上去。 */
   .stage-wrap {
     flex: 1 1 auto;
     min-height: 0;
     display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 12px;
+    padding: 8px;
     border: 1px solid var(--line);
     border-radius: 12px;
     background: #fff;
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
-    overflow: hidden;
+    overflow: auto;
+    overscroll-behavior: contain;
   }
+  .stage-wrap > .stage { margin: auto; }
 
   /* ---- 加元素快捷栏（预览下一排横向滑动的按钮） ---- */
   .add-bar {

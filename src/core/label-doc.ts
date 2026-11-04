@@ -279,10 +279,145 @@ export function sampleDoc(paper: PaperSetup): LabelDoc {
 
 const STORE_KEY = "labelapp.templates.v1";
 
+/** 本地最多存这么多份，超出的丢最旧的 */
+const MAX_TEMPLATES = 30;
+
 export interface SavedTemplate {
   name: string;
   doc: LabelDoc;
   savedAt: number;
+}
+
+/** saveTemplate 的结果：调用方据此提示"存进去了没有、有没有挤掉旧的" */
+export interface SaveTemplateResult {
+  /** 保存后完整的模板列表 */
+  templates: SavedTemplate[];
+  /** 是否真的写进了 localStorage */
+  ok: boolean;
+  /** 失败原因（配额不足等），ok=false 时有值 */
+  error?: string;
+  /** 是否因为超出上限丢掉了最旧的模板 */
+  dropped: boolean;
+}
+
+function numOr(v: unknown, fallback: number): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+/** 尺寸类字段：超出上下限就回退到默认值，而不是把用户数据夹成边界值 */
+function dimOr(v: unknown, fallback: number, min: number, max: number): number {
+  const n = numOr(v, fallback);
+  return n >= min && n <= max ? n : fallback;
+}
+
+/**
+ * 把磁盘上读到的 JSON 收敛成合法元素。
+ * 老模板可能缺字段（valign、新增的 threshold…），也可能被手工改坏，
+ * 这里逐字段兜底，类型不认识的元素直接丢掉，不让它污染渲染。
+ */
+function sanitizeElement(raw: unknown): LabelElement | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  const type = r.type;
+  if (typeof type !== "string") return null;
+
+  const base: BaseElement = {
+    id: typeof r.id === "string" && r.id ? r.id : newId(type),
+    type: type as ElementType,
+    x: numOr(r.x, 0),
+    y: numOr(r.y, 0),
+    w: Math.max(1, numOr(r.w, 30)),
+    h: Math.max(1, numOr(r.h, 10)),
+    rotate: ([0, 90, 180, 270].includes(Number(r.rotate)) ? Number(r.rotate) : 0) as
+      | 0
+      | 90
+      | 180
+      | 270,
+    visible: r.visible !== false,
+  };
+
+  switch (type) {
+    case "text":
+      return createText({
+        ...base,
+        type: "text",
+        text: typeof r.text === "string" ? r.text : "文字",
+        fontSizeMm: Math.max(1, numOr(r.fontSizeMm, 3.5)),
+        bold: Boolean(r.bold),
+        align: r.align === "left" || r.align === "right" ? r.align : "center",
+        valign: r.valign === "top" || r.valign === "bottom" ? r.valign : "middle",
+        lineHeight: Math.max(1, numOr(r.lineHeight, 1.3)),
+        wrap: Boolean(r.wrap),
+      });
+    case "barcode": {
+      const formats = ["CODE128", "CODE39", "EAN13", "ITF14"];
+      const fmt = typeof r.format === "string" && formats.includes(r.format) ? r.format : "CODE128";
+      return createBarcode({
+        ...base,
+        type: "barcode",
+        format: fmt as BarcodeElement["format"],
+        value: typeof r.value === "string" ? r.value : "",
+        showText: r.showText !== false,
+        textSizeMm: Math.max(1, numOr(r.textSizeMm, 2.2)),
+      });
+    }
+    case "qrcode":
+      return createQrCode({
+        ...base,
+        type: "qrcode",
+        value: typeof r.value === "string" ? r.value : "",
+      });
+    case "rect":
+      return createRect({
+        ...base,
+        type: "rect",
+        filled: Boolean(r.filled),
+        strokeMm: Math.max(0.1, numOr(r.strokeMm, 0.4)),
+      });
+    case "line":
+      return createLine({
+        ...base,
+        type: "line",
+        thicknessMm: Math.max(0.1, numOr(r.thicknessMm, 0.5)),
+      });
+    case "image":
+      return createImage({
+        ...base,
+        type: "image",
+        dataUrl: typeof r.dataUrl === "string" ? r.dataUrl : "",
+        fit: r.fit === "cover" || r.fit === "stretch" ? r.fit : "contain",
+        threshold: Math.min(255, Math.max(0, numOr(r.threshold, 128))),
+        dither: Boolean(r.dither),
+      });
+    default:
+      return null;
+  }
+}
+
+/** 把读到的文档收敛成合法文档；结构完全不可用时返回 null */
+export function sanitizeDoc(raw: unknown, fallbackName = "未命名"): LabelDoc | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  if (!r.paper || typeof r.paper !== "object") return null;
+  const p = r.paper as Record<string, unknown>;
+  const dpi = numOr(p.dpi, 203);
+  const printheadDots = Math.max(1, numOr(p.printheadDots, 400));
+  const paper: PaperSetup = {
+    widthMm: dimOr(p.widthMm, 50, 5, 200),
+    heightMm: dimOr(p.heightMm, 30, 5, 300),
+    dpi,
+    printheadDots,
+  };
+  const elements = Array.isArray(r.elements)
+    ? r.elements.map(sanitizeElement).filter((e): e is LabelElement => e !== null)
+    : [];
+  return {
+    version: 1,
+    name: typeof r.name === "string" && r.name ? r.name : fallbackName,
+    paper,
+    elements,
+  };
 }
 
 /** 读取本地模板列表，失败一律当空（localStorage 可能被禁用/配额满） */
@@ -290,24 +425,43 @@ export function loadTemplates(): SavedTemplate[] {
   try {
     const raw = localStorage.getItem(STORE_KEY);
     if (!raw) return [];
-    const list = JSON.parse(raw) as SavedTemplate[];
-    return Array.isArray(list) ? list : [];
+    const list = JSON.parse(raw) as unknown;
+    if (!Array.isArray(list)) return [];
+    // 载入时逐条校验：坏掉的条目直接丢弃，不让它把整个列表带崩
+    return list
+      .map((item): SavedTemplate | null => {
+        if (!item || typeof item !== "object") return null;
+        const t = item as Record<string, unknown>;
+        if (typeof t.name !== "string" || !t.name) return null;
+        const doc = sanitizeDoc(t.doc, t.name);
+        if (!doc) return null;
+        return { name: t.name, doc, savedAt: numOr(t.savedAt, 0) };
+      })
+      .filter((t): t is SavedTemplate => t !== null);
   } catch {
     return [];
   }
 }
 
 /** 保存一份模板，同名覆盖 */
-export function saveTemplate(name: string, doc: LabelDoc): SavedTemplate[] {
-  const list = loadTemplates().filter((t) => t.name !== name);
+export function saveTemplate(name: string, doc: LabelDoc): SaveTemplateResult {
+  const prev = loadTemplates();
+  const list = prev.filter((t) => t.name !== name);
   list.unshift({ name, doc: { ...doc, name }, savedAt: Date.now() });
-  const trimmed = list.slice(0, 30);
+  const dropped = list.length > MAX_TEMPLATES;
+  const trimmed = list.slice(0, MAX_TEMPLATES);
   try {
     localStorage.setItem(STORE_KEY, JSON.stringify(trimmed));
-  } catch {
-    /* 存不下就算了，不影响打印 */
+  } catch (e) {
+    /* 配额满（带图片的模板很容易超 5MB）时不能静默失败，要让界面提示 */
+    return {
+      templates: prev,
+      ok: false,
+      error: `本地存储空间不足（${(e as Error).message}），带图片的模板请先导出或换一台设备保存`,
+      dropped: false,
+    };
   }
-  return trimmed;
+  return { templates: trimmed, ok: true, dropped };
 }
 
 export function deleteTemplate(name: string): SavedTemplate[] {

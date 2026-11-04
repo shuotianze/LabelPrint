@@ -29,6 +29,7 @@ import {
   type TextElement,
 } from "../core/label-doc";
 import { dotsPerMm, round1 } from "../core/units";
+import { isCompactLayout } from "./breakpoints";
 import {
   centerInContainer,
   centerOf,
@@ -37,123 +38,18 @@ import {
   placeByCenter,
   resizeKeepCenter,
 } from "../core/align";
+import { labelWrap, numInput } from "./form-controls";
+import { COMMON, FIELDS, TYPE_LABEL, type FieldDef } from "./panel-fields";
+import { PaperPanel, type PrintAccess } from "./paper-panel";
+import { bindBoxDrag, bindGripDrag, type DragHost } from "./drag";
 import {
   canvasSizeOf,
   createCache,
+  forgetImage,
   printableMmOf,
   renderLabel,
   type RenderCache,
 } from "../render/render-label";
-
-/* ------------------------------------------------------------------ 表单描述 */
-
-interface FieldDef {
-  key: string;
-  label: string;
-  kind: "num" | "text" | "area" | "select" | "check" | "range";
-  min?: number;
-  max?: number;
-  step?: number;
-  options?: { value: string; label: string }[];
-  unit?: string;
-}
-
-const COMMON: FieldDef[] = [
-  { key: "x", label: "左", kind: "num", step: 0.1, unit: "mm" },
-  { key: "y", label: "上", kind: "num", step: 0.1, unit: "mm" },
-  { key: "w", label: "宽", kind: "num", step: 0.1, unit: "mm" },
-  /* 中心 X 是"以中间点为基准"的直接入口：
-   * 改宽守住它，改它则带着宽度一起平移（x = 中心 - 宽/2）。 */
-  { key: "cx", label: "中心 X", kind: "num", step: 0.1, unit: "mm" },
-  { key: "h", label: "高", kind: "num", step: 0.1, unit: "mm" },
-  {
-    key: "rotate",
-    label: "旋转",
-    kind: "select",
-    options: [
-      { value: "0", label: "0°" },
-      { value: "90", label: "90°" },
-      { value: "180", label: "180°" },
-      { value: "270", label: "270°" },
-    ],
-  },
-  { key: "visible", label: "参与打印", kind: "check" },
-];
-
-const FIELDS: Record<string, FieldDef[]> = {
-  text: [
-    { key: "text", label: "内容", kind: "area" },
-    { key: "fontSizeMm", label: "字高", kind: "num", min: 1.2, max: 20, step: 0.1, unit: "mm" },
-    { key: "bold", label: "加粗", kind: "check" },
-    {
-      key: "align",
-      label: "水平对齐",
-      kind: "select",
-      options: [
-        { value: "left", label: "左" },
-        { value: "center", label: "中" },
-        { value: "right", label: "右" },
-      ],
-    },
-    {
-      key: "valign",
-      label: "垂直对齐",
-      kind: "select",
-      options: [
-        { value: "top", label: "上" },
-        { value: "middle", label: "中" },
-        { value: "bottom", label: "下" },
-      ],
-    },
-    { key: "lineHeight", label: "行距", kind: "num", min: 1, max: 3, step: 0.05 },
-    { key: "wrap", label: "按宽度折行", kind: "check" },
-  ],
-  barcode: [
-    {
-      key: "format",
-      label: "码制",
-      kind: "select",
-      options: [
-        { value: "CODE128", label: "Code 128" },
-        { value: "CODE39", label: "Code 39" },
-        { value: "EAN13", label: "EAN-13（13 位数字）" },
-        { value: "ITF14", label: "ITF-14（14 位数字）" },
-      ],
-    },
-    { key: "value", label: "内容", kind: "text" },
-    { key: "showText", label: "显示明文", kind: "check" },
-    { key: "textSizeMm", label: "明文字高", kind: "num", min: 1.2, max: 8, step: 0.1, unit: "mm" },
-  ],
-  qrcode: [{ key: "value", label: "内容", kind: "area" }],
-  rect: [
-    { key: "filled", label: "实心", kind: "check" },
-    { key: "strokeMm", label: "线宽", kind: "num", min: 0.1, max: 3, step: 0.1, unit: "mm" },
-  ],
-  line: [{ key: "thicknessMm", label: "线宽", kind: "num", min: 0.1, max: 3, step: 0.1, unit: "mm" }],
-  image: [
-    {
-      key: "fit",
-      label: "填充",
-      kind: "select",
-      options: [
-        { value: "contain", label: "完整显示" },
-        { value: "cover", label: "裁切铺满" },
-        { value: "stretch", label: "拉伸铺满" },
-      ],
-    },
-    { key: "threshold", label: "黑白阈值", kind: "range", min: 0, max: 255, step: 1 },
-    { key: "dither", label: "抖动（照片用）", kind: "check" },
-  ],
-};
-
-const TYPE_LABEL: Record<string, string> = {
-  text: "文字",
-  barcode: "一维码",
-  qrcode: "二维码",
-  rect: "矩形",
-  line: "线条",
-  image: "图片",
-};
 
 /* ------------------------------------------------------------------ 编辑器 */
 
@@ -164,15 +60,32 @@ export interface EditorHooks {
   pickImage?: () => Promise<string | null>;
   /** 状态栏文字 */
   notify?: (msg: string, isError?: boolean) => void;
-  /** 选中的元素变了（手机端据此弹出/收起属性面板） */
-  onSelect?: (id: string | null) => void;
 }
+
+/** 多选批量对齐/分布的方向 */
+type AlignMode =
+  | "left"
+  | "right"
+  | "top"
+  | "bottom"
+  | "centerX"
+  | "centerY"
+  | "spaceX"
+  | "spaceY";
+
+/**
+ * 打印参数读写口。
+ * 手机上工具栏被底部操作条取代，浓度和标签类型只能在「设置」里改，
+ * 所以属性面板需要直接读写这两个控件（桌面端这两行不出现，避免和工具栏重复）。
+ */
+export type { PrintAccess };
 
 export class LabelEditor {
   private doc: LabelDoc;
   private cache: RenderCache = createCache();
   private zoom = 1;
-  private selectedId: string | null = null;
+  /** 多选：选中的元素 id 列表，第一个是"主选中"（属性面板按它显示） */
+  private selectedIds: string[] = [];
   /** 面板何时需要重建：只在选中变化/结构变化时重建，拖动时重建会打断输入焦点 */
   private panelDirty = true;
   /** 渲染队列：正在画的时候再来的改动只做标记，画完补一轮，避免并发抢 canvas */
@@ -182,29 +95,30 @@ export class LabelEditor {
   private overlay: HTMLElement;
   private inspector: HTMLElement;
   private hooks: EditorHooks;
-  /** 纸张输入控件，改纸时只回写数字，不重建面板（否则输入框焦点丢失） */
-  private paperInputs?: {
-    w: HTMLInputElement;
-    h: HTMLInputElement;
-    info: HTMLElement;
-    limit: HTMLElement;
-    head: HTMLSelectElement;
-    preset: HTMLSelectElement;
-  };
+  /** 纸张设置区。改纸时只回写数字，不重建面板（否则输入框焦点丢失） */
+  private paperPanel: PaperPanel | null = null;
   /** 开始编辑纸张数字那一刻的纸型，失焦时用它算缩放比 */
   private paperEditBase: { w: number; h: number } | null = null;
+  /** 就地编辑文字的收尾回调；有值就表示画布上正开着一个编辑框 */
+  private inlineEditorClose: (() => void) | null = null;
+  /** 正在就地编辑的元素 id，用来挡掉"同一次双击进来两遍" */
+  private inlineEditingId: string | null = null;
+  /** 浓度/标签类型的读写口（窄屏重排后面板里要用） */
+  private print: PrintAccess | null;
 
   constructor(opts: {
     canvas: HTMLCanvasElement;
     overlay: HTMLElement;
     inspector: HTMLElement;
     doc: LabelDoc;
+    print?: PrintAccess;
     hooks?: EditorHooks;
   }) {
     this.canvas = opts.canvas;
     this.overlay = opts.overlay;
     this.inspector = opts.inspector;
     this.doc = opts.doc;
+    this.print = opts.print ?? null;
     this.hooks = opts.hooks ?? {};
 
     // 点空白处取消选中
@@ -212,16 +126,31 @@ export class LabelEditor {
       if (e.target === this.overlay) this.select(null);
     });
 
-    // Delete / Backspace 删除，方向键微调
+    /* 点到别处就把就地编辑框收掉。
+     * 元素框的 pointerdown 会 stopPropagation，所以只能挂在 window 的捕获阶段；
+     * 也不能指望 blur：有些 WebView/自动化环境里 focus() 之后不派发 blur，
+     * 编辑框会一直挂在画布上。 */
+    window.addEventListener(
+      "pointerdown",
+      (e) => {
+        const t = e.target as HTMLElement | null;
+        if (this.inlineEditorClose && !t?.classList?.contains("inline-editor")) {
+          this.inlineEditorClose();
+        }
+      },
+      true
+    );
+
+    // Delete / Backspace 删除，方向键微调（多选时整体一起动）
     window.addEventListener("keydown", (e) => {
-      const el = this.selected();
-      if (!el) return;
+      const els = this.selectedElements();
+      if (!els.length) return;
       const tag = (e.target as HTMLElement | null)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
 
       if (e.key === "Delete" || e.key === "Backspace") {
         e.preventDefault();
-        this.remove(el.id);
+        this.removeSelected();
         return;
       }
       const step = e.shiftKey ? 1 : 0.1;
@@ -234,8 +163,11 @@ export class LabelEditor {
       const mv = moves[e.key];
       if (mv) {
         e.preventDefault();
-        el.x = round1(el.x + mv[0]);
-        el.y = round1(el.y + mv[1]);
+        for (const el of els) {
+          el.x = round1(el.x + mv[0]);
+          el.y = round1(el.y + mv[1]);
+          this.clampToPaper(el);
+        }
         this.commit();
       }
     });
@@ -253,14 +185,20 @@ export class LabelEditor {
 
   setDoc(doc: LabelDoc) {
     this.doc = doc;
-    this.selectedId = null;
+    this.selectedIds = [];
     this.cache = createCache();
     this.commit(true);
   }
 
   setZoom(z: number) {
-    this.zoom = Math.min(3, Math.max(0.4, z));
+    // 下限 0.2：手机竖屏上"整张标签塞进屏幕"可能比 0.4 还小
+    this.zoom = Math.min(3, Math.max(0.2, z));
     this.commit();
+  }
+
+  /** 外部改了面板要读的选项（比如连上打印机后重建了标签类型）时调用 */
+  refreshPanel() {
+    this.commit(true);
   }
 
   getZoom(): number {
@@ -271,31 +209,61 @@ export class LabelEditor {
     return dotsPerMm(this.doc.paper.dpi) * this.zoom;
   }
 
+  /** 主选中元素（多选时取第一个），属性面板按它渲染 */
   selected(): LabelElement | undefined {
-    return this.doc.elements.find((e) => e.id === this.selectedId);
+    const id = this.selectedIds[0];
+    return id ? this.doc.elements.find((e) => e.id === id) : undefined;
   }
 
-  select(id: string | null) {
-    this.selectedId = id;
-    this.commit(true);
-    this.hooks.onSelect?.(id);
+  /** 当前全部选中元素，按文档顺序 */
+  selectedElements(): LabelElement[] {
+    const ids = new Set(this.selectedIds);
+    return this.doc.elements.filter((e) => ids.has(e.id));
   }
 
   /**
-   * 把整个舞台缩放到刚好放进 px 宽的容器里（手机竖屏用）。
+   * 选中元素。
+   * additive=true（按住 Shift/Ctrl 点击）是"加选/减选"，否则单选并清空原有选择。
+   */
+  select(id: string | null, additive = false) {
+    if (!id) {
+      this.selectedIds = [];
+    } else if (additive) {
+      this.selectedIds = this.selectedIds.includes(id)
+        ? this.selectedIds.filter((x) => x !== id)
+        : [...this.selectedIds, id];
+    } else {
+      this.selectedIds = [id];
+    }
+    this.commit(true);
+  }
+
+  /**
+   * 把整个舞台缩放到刚好放进 pxW × pxH 的框里（手机单屏用）。
    * 宽度取"画布宽"和"纸宽"的较大者：纸比打印头宽时右侧还有斜纹区，
    * 只按画布算会让斜纹条顶出屏幕。
+   * 高度也要算：手机竖屏能给的纵向空间有限，只按宽度拟合的话
+   * 长标签会把页面撑出屏幕，得靠滚动才能看全。
    */
-  fitToWidth(px: number) {
-    if (!(px > 0)) return;
-    const { width } = canvasSizeOf(this.doc);
+  fitToBox(pxW: number, pxH: number) {
+    if (!(pxW > 0) || !(pxH > 0)) return;
+    const { width, height } = canvasSizeOf(this.doc);
     const paperDots = this.doc.paper.widthMm * dotsPerMm(this.doc.paper.dpi);
-    const natural = Math.max(width, paperDots);
-    if (!natural) return;
-    const z = Math.min(3, Math.max(0.4, px / natural));
+    const naturalW = Math.max(width, paperDots);
+    if (!naturalW || !height) return;
+    // 取两个方向里更紧的那个比例，整张标签才都塞得下
+    const z = Math.min(3, Math.max(0.2, Math.min(pxW / naturalW, pxH / height)));
     // 避免 0.001 级的抖动反复触发重绘
     if (Math.abs(z - this.zoom) < 0.01) return;
     this.setZoom(z);
+  }
+
+  /** 把元素的左上角夹回纸内：右下边界也要管，否则能拖到纸外去 */
+  private clampToPaper(el: LabelElement) {
+    const maxX = Math.max(0, containerOf(this.doc.paper) - el.w);
+    const maxY = Math.max(0, this.doc.paper.heightMm - el.h);
+    el.x = round1(Math.min(maxX, Math.max(0, el.x)));
+    el.y = round1(Math.min(maxY, Math.max(0, el.y)));
   }
 
   /* ------------------------------------------------------------ 增删 */
@@ -335,16 +303,23 @@ export class LabelEditor {
     }
 
     this.doc.elements.push(el);
-    this.selectedId = el.id;
+    this.selectedIds = [el.id];
     this.commit(true);
-    // 新建后自动选中，手机端要跟着弹出属性面板（否则加完元素找不到参数在哪）
-    this.hooks.onSelect?.(el.id);
     if (type === "image") void this.pickImageFor(el as ImageElement);
   }
 
   remove(id: string) {
     this.doc.elements = this.doc.elements.filter((e) => e.id !== id);
-    if (this.selectedId === id) this.selectedId = null;
+    this.selectedIds = this.selectedIds.filter((x) => x !== id);
+    this.commit(true);
+  }
+
+  /** 删除所有选中的元素（多选时按一次 Delete 全清） */
+  removeSelected() {
+    const ids = new Set(this.selectedIds);
+    if (!ids.size) return;
+    this.doc.elements = this.doc.elements.filter((e) => !ids.has(e.id));
+    this.selectedIds = [];
     this.commit(true);
   }
 
@@ -356,7 +331,7 @@ export class LabelEditor {
     copy.x = round1(copy.x + 2);
     copy.y = round1(copy.y + 2);
     this.doc.elements.push(copy);
-    this.selectedId = copy.id;
+    this.selectedIds = [copy.id];
     this.commit(true);
   }
 
@@ -377,7 +352,7 @@ export class LabelEditor {
      * 面板一重建，正在输入的 input 就被换掉了，焦点丢失：
      * 想输"50"只能输进去"5"，第二位数字不知跑到哪去——就是"设不了 50"的真凶。
      * 所以只刷新数字和画布，控件本身留着。 */
-    this.syncPaperInputs();
+    this.paperPanel?.sync();
     this.commit();
   }
 
@@ -404,7 +379,7 @@ export class LabelEditor {
       );
     }
     this.doc.paper = { ...prev, widthMm: w, heightMm: h };
-    this.syncPaperInputs();
+    this.paperPanel?.sync();
     this.commit();
   }
 
@@ -494,6 +469,12 @@ export class LabelEditor {
         this.needRender = false;
         await this.render();
       }
+    } catch (err) {
+      /* 单次渲染出错不能把整个 App 打穿：index.html 的兜底会把页面盖成全白
+       * 的"启动失败"，用户既看不到画布也没法继续操作。这里收住，只提示一条，
+       * 下一次交互再重画。 */
+      const msg = err instanceof Error ? err.message : String(err);
+      this.hooks.notify?.(`渲染失败：${msg}`, true);
     } finally {
       this.rendering = false;
     }
@@ -519,7 +500,17 @@ export class LabelEditor {
       stage.style.height = `${canvasH}px`;
     }
 
-    await renderLabel(this.canvas, this.doc, this.cache);
+    /* 预览按"屏幕像素"渲染：backing 尺寸 = 纸宽点数 × zoom × devicePixelRatio，
+     * CSS 尺寸仍然是 × zoom。这样画布和屏幕像素基本 1:1，文字不再被拉伸发虚。
+     * 打印路径不这么干，那边必须严格等于打印头点数。 */
+    const dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+    const previewScale = Math.min(4, Math.max(1, this.zoom * dpr));
+
+    await renderLabel(this.canvas, this.doc, this.cache, { scale: previewScale });
+    /* 预览画布的 backing 尺寸是放大过的，真实打印点数记在 dataset 上，
+     * 测试和外部代码要判断"打出来多少点"应该读这里，而不是 canvas.width。 */
+    this.canvas.dataset.printWidth = String(width);
+    this.canvas.dataset.printHeight = String(height);
     this.syncDeadZone(canvasW, canvasH, stageW);
     this.syncBoxes();
     if (this.panelDirty) {
@@ -554,12 +545,23 @@ export class LabelEditor {
   private syncBoxes() {
     const ppm = this.ppm;
     const ids = new Set(this.doc.elements.map((e) => e.id));
+    const sel = new Set(this.selectedIds);
 
+    /* 只清理"已经不存在的元素框"。
+     * 遮罩层里还住着斜纹条（.dead-zone）和就地编辑框（.inline-editor），
+     * 它们都没有 data-id。以前这里按"data-id 不在文档里"一律 remove()，
+     * 会把正在编辑的 textarea 一并删掉；删它有几率触发 blur → finish() 再删一次，
+     * 第二次 delete 抛 NotFoundError，整个渲染队列就烂掉（真机上表现为整屏"启动失败"）。
+     * 所以先认 class 再比 id，真删也包一层 try：节点被别处（删除元素）先摘走时不再炸。 */
     for (const node of Array.from(this.overlay.children)) {
       const box = node as HTMLElement;
-      // 斜纹条不是元素框，不能被当成"已经删掉的元素"清掉
-      if (box.classList.contains("dead-zone")) continue;
-      if (!ids.has(box.dataset.id ?? "")) box.remove();
+      if (!box.classList.contains("el-box")) continue;
+      if (ids.has(box.dataset.id ?? "")) continue;
+      try {
+        this.overlay.removeChild(box);
+      } catch {
+        /* 已经被移除过了，忽略 */
+      }
     }
 
     for (const el of this.doc.elements) {
@@ -568,23 +570,23 @@ export class LabelEditor {
         box = document.createElement("div");
         box.className = "el-box";
         box.dataset.id = el.id;
-        this.bindBox(box, el.id);
+        bindBoxDrag(box, el.id, this.dragHost());
         this.overlay.appendChild(box);
       }
-      box.classList.toggle("selected", el.id === this.selectedId);
+      box.classList.toggle("selected", sel.has(el.id));
       box.classList.toggle("hidden-el", !el.visible);
       box.style.left = `${el.x * ppm}px`;
       box.style.top = `${el.y * ppm}px`;
       box.style.width = `${Math.max(6, el.w * ppm)}px`;
       box.style.height = `${Math.max(6, el.h * ppm)}px`;
 
-      // 右下角缩放手柄，只在选中时插入
+      // 右下角缩放手柄：只在单选时给主选中元素插入，多选时不缩（避免歧义）
       let grip = box.querySelector<HTMLElement>(".grip");
-      if (el.id === this.selectedId) {
+      if (this.selectedIds.length === 1 && el.id === this.selectedIds[0]) {
         if (!grip) {
           grip = document.createElement("div");
           grip.className = "grip";
-          this.bindGrip(grip, el.id);
+          bindGripDrag(grip, el.id, this.dragHost());
           box.appendChild(grip);
         }
       } else if (grip) {
@@ -595,55 +597,114 @@ export class LabelEditor {
 
   /* ------------------------------------------------------------ 拖拽 */
 
-  private bindBox(box: HTMLElement, id: string) {
-    box.addEventListener("pointerdown", (e) => {
-      e.stopPropagation();
-      this.select(id);
+  /** 把拖拽模块需要的状态/回调打包给它，模块自己不碰编辑器内部字段 */
+  private dragHost(): DragHost {
+    return {
+      ppm: () => this.ppm,
+      paper: () => this.doc.paper,
+      find: (id) => this.doc.elements.find((e) => e.id === id),
+      select: (id, additive) => this.select(id, additive),
+      isSelected: (id) => this.selectedIds.includes(id),
+      commit: () => this.commit(),
+      clampToPaper: (el) => this.clampToPaper(el),
+      /* 拖动"多选里的一个"时整组一起走，这是多选最常用的操作 */
+      dragTargets: (id) => {
+        const group = this.selectedIds.includes(id) ? this.selectedElements() : [];
+        if (group.length > 1) return group;
+        const one = this.doc.elements.find((e) => e.id === id);
+        return one ? [one] : [];
+      },
+      onDoubleClick: (id) => this.activateElement(id),
+    };
+  }
 
-      const el = this.doc.elements.find((x) => x.id === id);
-      if (!el) return;
+  /** 双击元素：文字就地编辑，其它元素退回"跳到属性面板内容框" */
+  private activateElement(id: string) {
+    const el = this.doc.elements.find((e) => e.id === id);
+    if (!el) return;
+    if (el.type === "text" && el.rotate === 0) {
+      /* 手机上双击常常既命中我们自己的"两次轻点"识别，又触发原生 dblclick，
+       * 同一个元素会连着进来两次。第二次若把刚 focus 的 textarea 删掉重建，
+       * 删除动作会同步触发 blur → finish() 再删一次 → NotFoundError，
+       * 整个页面就被兜底成"启动失败"。已经在编辑这个元素就直接返回。 */
+      if (this.inlineEditingId === el.id) return;
+      this.startInlineEdit(el as TextElement);
+      return;
+    }
+    // 旋转过的文字在画布上是斜的，就地编辑框对不上，仍然走属性面板
+    this.focusContentField();
+  }
 
-      const ppm = this.ppm;
-      const startX = e.clientX;
-      const startY = e.clientY;
-      const originX = el.x;
-      const originY = el.y;
-      /* 捕获指针是为了"手指滑出框外也继续拖动"。
-       * 但合成事件（自动化测试）或指针已失效时这里会抛 NotFoundError，
-       * 一旦抛出去就会中断整个 pointerdown，真机上也可能是白屏错误页。
-       * 抓不到就退化成普通拖动，不影响选中和拖拽。 */
-      try {
-        box.setPointerCapture(e.pointerId);
-      } catch {
-        /* ignore */
+  /**
+   * 就地编辑文字：在元素位置盖一个 textarea，样式跟着元素的字号/对齐走。
+   * 失焦或 Ctrl+Enter 写回文档，Esc 放弃。
+   * 用 textarea 而不是 contentEditable：换行、粘贴、输入法都天然正确。
+   */
+  private startInlineEdit(el: TextElement) {
+    /* 同时只允许一个编辑框。收旧的必须走 inlineEditorClose（内部会先置 done
+     * 再摘节点），不能直接 .remove()：删一个正在 focus 的 textarea 会同步触发
+     * blur → finish() → 再删一次，第二次就抛 NotFoundError。 */
+    this.inlineEditorClose?.();
+    this.inlineEditingId = el.id;
+
+    const ppm = this.ppm;
+    const ta = document.createElement("textarea");
+    ta.className = "inline-editor";
+    ta.value = el.text;
+    ta.style.left = `${el.x * ppm}px`;
+    ta.style.top = `${el.y * ppm}px`;
+    ta.style.width = `${Math.max(20, el.w * ppm)}px`;
+    ta.style.height = `${Math.max(14, el.h * ppm)}px`;
+    ta.style.fontSize = `${Math.max(1, el.fontSizeMm * ppm)}px`;
+    ta.style.fontWeight = el.bold ? "700" : "400";
+    ta.style.textAlign = el.align;
+    ta.style.lineHeight = String(el.lineHeight);
+
+    let done = false;
+    const original = el.text;
+    const finish = (save: boolean) => {
+      if (done) return;
+      done = true;
+      // 输入时已经实时写回文档，取消编辑要把原值放回去
+      el.text = save ? ta.value : original;
+      this.inlineEditorClose = null;
+      this.inlineEditingId = null;
+      // 节点可能已经被别处摘走（删元素、切模板），再 remove 会抛 NotFoundError
+      if (ta.parentNode) {
+        try {
+          ta.parentNode.removeChild(ta);
+        } catch {
+          /* ignore */
+        }
       }
+      this.commit(true);
+    };
+    // 让"点到别处"能找到这个编辑框
+    this.inlineEditorClose = () => finish(true);
 
-      const onMove = (ev: PointerEvent) => {
-        const dx = (ev.clientX - startX) / ppm;
-        const dy = (ev.clientY - startY) / ppm;
-        // 吸附到 0.1mm，避免存进模板里一堆 12.837461 这种数
-        el.x = Math.max(0, round1(originX + dx));
-        el.y = Math.max(0, round1(originY + dy));
-        this.commit();
-      };
-      const onUp = () => {
-        box.removeEventListener("pointermove", onMove);
-        box.removeEventListener("pointerup", onUp);
-        box.removeEventListener("pointercancel", onUp);
-      };
-      box.addEventListener("pointermove", onMove);
-      box.addEventListener("pointerup", onUp);
-      box.addEventListener("pointercancel", onUp);
+    /* 边打边写回文档：这样即使输入过程中焦点被系统抢走（没收到 blur），
+     * 已经敲进去的字也不会丢。 */
+    ta.addEventListener("input", () => {
+      el.text = ta.value;
+      this.commit();
+    });
+    ta.addEventListener("blur", () => finish(true));
+    ta.addEventListener("keydown", (e) => {
+      // 编辑时别让全局快捷键（方向键挪元素、Delete 删元素）抢走按键
+      e.stopPropagation();
+      if (e.key === "Escape") {
+        e.preventDefault();
+        finish(false);
+      } else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        finish(true);
+      }
+      // 普通 Enter 保留换行：标签上的多行文字就是这样敲出来的
     });
 
-    /* 双击元素 = 选中 + 直接把光标放进"内容"框。
-     * 手机上长按是系统保留动作（文本选择/放大镜），抢不过来也不该抢，
-     * 与其让用户猜"要长按吗"，不如给一个明确的双击入口。 */
-    box.addEventListener("dblclick", () => {
-      this.select(id);
-      // select() 会整块重建属性面板，输入框要等这一帧挂上 DOM 才能聚焦
-      requestAnimationFrame(() => this.focusContentField());
-    });
+    this.overlay.appendChild(ta);
+    ta.focus();
+    ta.select();
   }
 
   /** 把焦点送进当前元素的内容输入框（没有内容字段的元素返回 false） */
@@ -661,48 +722,6 @@ export class LabelEditor {
     return true;
   }
 
-  private bindGrip(grip: HTMLElement, id: string) {
-    grip.addEventListener("pointerdown", (e) => {
-      e.stopPropagation();
-      const el = this.doc.elements.find((x) => x.id === id);
-      if (!el) return;
-
-      const ppm = this.ppm;
-      const startX = e.clientX;
-      const startY = e.clientY;
-      const ow = el.w;
-      const oh = el.h;
-      // 缩放全程守住这个中心：左右两边对称伸缩，中心 X 不动
-      const centerX = centerOf(el);
-      try {
-        grip.setPointerCapture(e.pointerId);
-      } catch {
-        /* 同上：抓不到指针也照常缩放手柄 */
-      }
-
-      const onMove = (ev: PointerEvent) => {
-        const box = containerOf(this.doc.paper);
-        /* 手柄在右边，鼠标右移 dx 时右边 +dx、左边 -dx，
-         * 所以宽度变化是 2 倍 dx——这样手柄始终跟着指针，中心不动。 */
-        const nextW = Math.min(
-          box,
-          Math.max(MIN_WIDTH_MM, round1(ow + ((ev.clientX - startX) / ppm) * 2))
-        );
-        placeByCenter(el, { widthMm: nextW, centerMm: centerX, containerMm: box });
-        el.h = Math.max(1, round1(oh + (ev.clientY - startY) / ppm));
-        this.commit();
-      };
-      const onUp = () => {
-        grip.removeEventListener("pointermove", onMove);
-        grip.removeEventListener("pointerup", onUp);
-        grip.removeEventListener("pointercancel", onUp);
-      };
-      grip.addEventListener("pointermove", onMove);
-      grip.addEventListener("pointerup", onUp);
-      grip.addEventListener("pointercancel", onUp);
-    });
-  }
-
   /* ------------------------------------------------------------ 属性面板 */
 
   /**
@@ -710,32 +729,45 @@ export class LabelEditor {
    * 否则会出现"面板已经变抽屉、内容却还按桌面顺序排"的错位。
    */
   private isCompact(): boolean {
-    return typeof window.matchMedia === "function"
-      ? window.matchMedia("(max-width: 860px)").matches
-      : false;
+    return isCompactLayout();
   }
 
   private buildInspector() {
     const root = this.inspector;
     root.textContent = "";
 
-    const el = this.selected();
+    const els = this.selectedElements();
 
     /* 手机上属性面板是从底部弹出的，只占 62vh。纸张设置（纸型/宽/高/点数）
      * 一排下来就把"内容"输入框顶到看不见的地方了 —— 用户会以为得长按才能编辑。
      * 所以窄屏把元素区提到最前面，桌面保持"纸张在上"的原顺序。 */
-    if (el && this.isCompact()) {
-      root.appendChild(this.elementSection(el));
-      root.appendChild(this.paperSection());
-      return;
+    if (this.isCompact()) {
+      if (els.length > 1) {
+        root.appendChild(this.multiSection(els));
+        root.appendChild(this.paperSection());
+        return;
+      }
+      const one = els[0];
+      if (one) {
+        root.appendChild(this.elementSection(one));
+        root.appendChild(this.paperSection());
+        return;
+      }
     }
 
     root.appendChild(this.paperSection());
 
+    if (els.length > 1) {
+      root.appendChild(this.multiSection(els));
+      return;
+    }
+
+    const el = els[0];
     if (!el) {
       const tip = document.createElement("p");
       tip.className = "hint mt";
-      tip.textContent = "点画布上的元素可以改属性；没有元素时这里只显示纸张设置。";
+      tip.textContent =
+        "点画布上的元素可以改属性；按住 Shift/Ctrl 点多个（手机直接点多个）可以批量对齐。";
       root.appendChild(tip);
       return;
     }
@@ -762,6 +794,23 @@ export class LabelEditor {
     form.className = "fields";
     for (const f of fields) form.appendChild(this.fieldRow(el, f));
     wrap.appendChild(form);
+
+    /* 手机上"长按加选"没有 Shift 键可以替代，不给提示就没人知道
+     * 怎么才能选到 2 个元素 —— 对齐/等间距按钮只在多选时才出现。 */
+    if (this.isCompact()) {
+      const tip = document.createElement("p");
+      tip.className = "hint mt";
+      tip.textContent = "直接点另一个元素即可加选，点画布空白处取消全部；选中 2 个以上会出现批量对齐和等间距。";
+      wrap.appendChild(tip);
+    }
+
+    if (el.type === "text") {
+      const tip = document.createElement("p");
+      tip.className = "hint mt";
+      tip.textContent =
+        "双击画布上的文字可直接改内容（手机连点两下）：Esc 取消，Ctrl+Enter 完成，Enter 换行。";
+      wrap.appendChild(tip);
+    }
 
     if (el.type === "image") {
       const btn = document.createElement("button");
@@ -808,203 +857,146 @@ export class LabelEditor {
     return wrap;
   }
 
-  /** 纸张设置：不选中元素时也能改，随时可用 */
-  private paperSection(): HTMLElement {
+  /**
+   * 多选时的批量操作区：对齐。
+   * 对齐基准是"选中元素的外接矩形"，跟常见设计工具一致：
+   * 左对齐＝所有元素左边贴到最左那条边，而不是贴纸边。
+   */
+  private multiSection(els: LabelElement[]): HTMLElement {
     const wrap = document.createElement("div");
 
-    const h = document.createElement("h2");
-    h.textContent = "纸张";
-    wrap.appendChild(h);
+    const title = document.createElement("h2");
+    title.className = "mt";
+    title.textContent = `已选中 ${els.length} 个元素`;
+    wrap.appendChild(title);
 
-    const preset = document.createElement("select");
-    preset.innerHTML = "";
-    /* B1 的纸仓最大 50mm，实测可打印也是 50mm，所以默认就是 50×30。
-     * 选预设＝换纸型，内容会跟着等比缩放（见 setPaperSizeScaled）。 */
-    const presets = [
-      { label: "自定义", w: 0, h: 0 },
-      { label: "B1 50×30（默认）", w: 50, h: 30 },
-      { label: "B1 50×40", w: 50, h: 40 },
-      { label: "50×25", w: 50, h: 25 },
-      { label: "48×30", w: 48, h: 30 },
-      { label: "48×25", w: 48, h: 25 },
-      { label: "40×30", w: 40, h: 30 },
-      { label: "40×20", w: 40, h: 20 },
-      { label: "30×15", w: 30, h: 15 },
-      { label: "连续纸 50×80", w: 50, h: 80 },
+    const hint = document.createElement("p");
+    hint.className = "hint";
+    hint.textContent =
+      "按住 Shift/Ctrl 点元素可以加选（手机上直接点下一个元素即可加选，点空白处取消）；拖动其中任意一个，整组一起移动。";
+    wrap.appendChild(hint);
+
+    const buttons: { label: string; mode: AlignMode }[] = [
+      { label: "左对齐", mode: "left" },
+      { label: "右对齐", mode: "right" },
+      { label: "顶端对齐", mode: "top" },
+      { label: "底端对齐", mode: "bottom" },
+      { label: "水平居中", mode: "centerX" },
+      { label: "垂直居中", mode: "centerY" },
+      { label: "水平等间距", mode: "spaceX" },
+      { label: "垂直等间距", mode: "spaceY" },
     ];
-    for (const p of presets) {
-      const o = document.createElement("option");
-      o.value = `${p.w}x${p.h}`;
-      o.textContent = p.label;
-      preset.appendChild(o);
-    }
-    preset.onchange = () => {
-      const [w, h2] = preset.value.split("x").map(Number);
-      if (w > 0 && h2 > 0) this.setPaperSizeScaled(w, h2);
-      else preset.value = `${this.doc.paper.widthMm}x${this.doc.paper.heightMm}`;
-    };
-    wrap.appendChild(this.labelWrap("纸型", preset));
 
-    const wInput = this.paperDimInput("w");
-    const hInput = this.paperDimInput("h");
+    const rows: HTMLElement[] = [];
+    buttons.forEach((b, i) => {
+      if (i % 2 === 0) {
+        const row = document.createElement("div");
+        row.className = "row-actions mt";
+        rows.push(row);
+      }
+      const btn = document.createElement("button");
+      btn.textContent = b.label;
+      btn.onclick = () => this.alignSelection(b.mode, b.label);
+      rows[rows.length - 1].appendChild(btn);
+    });
+    wrap.append(...rows);
 
-    const row = document.createElement("div");
-    row.className = "row";
-    row.append(this.labelWrap("宽", wInput, "mm"), this.labelWrap("高", hInput, "mm"));
-    wrap.appendChild(row);
-
-    /* 打印头点数＝整机上限，画布宽度取"纸宽"和它里面小的那个。
-     * B1 机型表写 384 点（48mm），但这台实测能打满 50mm（400 点），
-     * 默认 400；万一打出来右边被切，切回 384 就会按 48mm 出图。 */
-    const headSel = document.createElement("select");
-    for (const opt of [
-      { v: 400, label: "400 点（50mm · 实测满宽）" },
-      { v: 384, label: "384 点（48mm · 机型表）" },
-    ]) {
-      const o = document.createElement("option");
-      o.value = String(opt.v);
-      o.textContent = opt.label;
-      headSel.appendChild(o);
-    }
-    headSel.value = String(this.doc.paper.printheadDots);
-    headSel.onchange = () => {
-      this.setPaperSize({ printheadDots: Number(headSel.value) });
-      this.syncPaperInputs();
-    };
-    wrap.appendChild(this.labelWrap("打印头", headSel));
-
-    const info = document.createElement("p");
-    info.className = "hint";
-    wrap.appendChild(info);
-
-    const limit = document.createElement("p");
-    limit.className = "hint";
-    wrap.appendChild(limit);
-
-    this.paperInputs = { w: wInput, h: hInput, info, limit, head: headSel, preset };
-    // 面板刚建好时把下拉/提示对齐到当前值（预设项要选中，不然显示"自定义"）
-    this.syncPaperInputs();
-
-    // 缩放只是显示比例，不改变打印内容，所以放在纸张区块最后
-    const zoom = document.createElement("input");
-    zoom.type = "range";
-    zoom.min = "0.4";
-    zoom.max = "2.5";
-    zoom.step = "0.1";
-    zoom.value = String(this.zoom);
-    const zval = document.createElement("i");
-    zval.textContent = `${Math.round(this.zoom * 100)}%`;
-    zoom.oninput = () => {
-      this.setZoom(Number(zoom.value));
-      zval.textContent = `${Math.round(this.zoom * 100)}%`;
-    };
-    wrap.appendChild(this.labelWrap("缩放", zoom)).appendChild(zval);
+    const actions = document.createElement("div");
+    actions.className = "row-actions mt";
+    const del = document.createElement("button");
+    del.textContent = `删除所选（${els.length}）`;
+    del.onclick = () => this.removeSelected();
+    actions.appendChild(del);
+    wrap.appendChild(actions);
 
     return wrap;
   }
 
-  /**
-   * 纸张宽/高输入框。
-   * 两个时机分开处理，缺一不可：
-   *   input  实时改纸（画布马上变宽变窄，手感直观），但**不**缩放内容；
-   *   change 失焦/回车时才按比例缩放整版内容。
-   * 如果 input 就缩放，输"50"会先按"5"缩一次再按"50"缩一次，版式被越缩越小。
-   */
-  private paperDimInput(kind: "w" | "h"): HTMLInputElement {
-    const input = document.createElement("input");
-    input.type = "number";
-    input.step = "1";
-    input.min = "5";
-    input.max = kind === "w" ? "200" : "300";
-    input.value = String(kind === "w" ? this.doc.paper.widthMm : this.doc.paper.heightMm);
+  /** 把选中的多个元素按外接矩形对齐 / 等间距分布 */
+  alignSelection(mode: AlignMode, label: string) {
+    const els = this.selectedElements();
+    if (els.length < 2) return;
 
-    input.addEventListener("focus", () => {
-      this.paperEditBase = { w: this.doc.paper.widthMm, h: this.doc.paper.heightMm };
-    });
-
-    input.addEventListener("input", () => {
-      const v = Number(input.value);
-      if (!Number.isFinite(v) || v < 5) return;
-      if (kind === "w") {
-        this.setPaperSize({ widthMm: v });
-        const head = this.maxWidthMm();
-        // 设得比打印头宽不拦，只提示：直接拒绝，用户会以为程序坏了
-        if (v > head + 0.05) {
-          this.hooks.notify?.(
-            `纸宽 ${v}mm，当前可打印只有 ${head}mm：右侧 ${(v - head).toFixed(1)}mm 打不到（预览里已标斜纹）`
-          );
+    /* 等间距：首尾两个不动，中间按"剩余空隙平均分"摆。
+     * 注意基准是**空隙**而不是元素中心——元素宽度不同时，
+     * 按中心等距会让窄的挨得近、宽的离得远，看起来并不均匀。 */
+    if (mode === "spaceX" || mode === "spaceY") {
+      const horizontal = mode === "spaceX";
+      const sorted = [...els].sort((a, b) => (horizontal ? a.x - b.x : a.y - b.y));
+      const first = sorted[0];
+      const last = sorted[sorted.length - 1];
+      const span = horizontal
+        ? last.x + last.w - first.x
+        : last.y + last.h - first.y;
+      const sumSize = sorted.reduce((s, e) => s + (horizontal ? e.w : e.h), 0);
+      const gap = (span - sumSize) / (sorted.length - 1);
+      let cursor = horizontal ? first.x : first.y;
+      for (const e of sorted) {
+        if (horizontal) {
+          e.x = round1(cursor);
+          cursor += e.w + gap;
+        } else {
+          e.y = round1(cursor);
+          cursor += e.h + gap;
         }
-      } else {
-        this.setPaperSize({ heightMm: v });
+        this.clampToPaper(e);
       }
-    });
-
-    input.addEventListener("change", () => {
-      this.applyPaperEdit();
-      // 失焦时把输入框纠正成真实生效值（比如被夹到下限）
-      input.value = String(kind === "w" ? this.doc.paper.widthMm : this.doc.paper.heightMm);
-    });
-
-    return input;
-  }
-
-  /** 改纸后回写数字与提示，不碰 DOM 结构，避免正在输入的框被换掉 */
-  private syncPaperInputs() {
-    const p = this.paperInputs;
-    if (!p) return;
-    // 正在输入的框不要硬改，否则光标会跳；失焦时由 change 事件纠正
-    if (document.activeElement !== p.w) p.w.value = String(this.doc.paper.widthMm);
-    if (document.activeElement !== p.h) p.h.value = String(this.doc.paper.heightMm);
-    if (document.activeElement !== p.head) p.head.value = String(this.doc.paper.printheadDots);
-    /* 预设下拉跟着当前尺寸走：尺寸对得上就选中对应项，对不上就落到"自定义"。
-     * 不这么做的话，文件里存的是 50×30，下拉却永远显示"自定义"，看着像没生效。 */
-    if (document.activeElement !== p.preset) {
-      const key = `${this.doc.paper.widthMm}x${this.doc.paper.heightMm}`;
-      p.preset.value = Array.from(p.preset.options).some((o) => o.value === key) ? key : "0x0";
+      this.commit();
+      this.hooks.notify?.(`已${label}：${els.length} 个元素，间距 ${round1(Math.max(0, gap))}mm`);
+      return;
     }
-    const { width, height } = canvasSizeOf(this.doc);
-    const realW = this.printableWidthMm();
-    p.info.textContent = `${width}×${height} 点 · ${realW.toFixed(1)}×${this.doc.paper.heightMm}mm @${this.doc.paper.dpi}dpi`;
-    p.limit.textContent =
-      this.doc.paper.widthMm > realW + 0.05
-        ? `打印头只有 ${this.maxWidthMm()}mm，右侧 ${(this.doc.paper.widthMm - realW).toFixed(1)}mm 打不到`
-        : `打印头 ${this.doc.paper.printheadDots} 点 = ${this.maxWidthMm()}mm，本页用满`;
-  }
 
+    const minX = Math.min(...els.map((e) => e.x));
+    const maxR = Math.max(...els.map((e) => e.x + e.w));
+    const minY = Math.min(...els.map((e) => e.y));
+    const maxB = Math.max(...els.map((e) => e.y + e.h));
 
-  private labelWrap(text: string, node: HTMLElement, unit?: string): HTMLElement {
-    const row = document.createElement("label");
-    row.className = "field";
-    const span = document.createElement("span");
-    span.textContent = text;
-    row.append(span, node);
-    if (unit) {
-      const u = document.createElement("i");
-      u.textContent = unit;
-      row.appendChild(u);
+    for (const e of els) {
+      switch (mode) {
+        case "left":
+          e.x = round1(Math.max(0, minX));
+          break;
+        case "right":
+          e.x = round1(maxR - e.w);
+          break;
+        case "top":
+          e.y = round1(Math.max(0, minY));
+          break;
+        case "bottom":
+          e.y = round1(maxB - e.h);
+          break;
+        case "centerX":
+          e.x = round1((minX + maxR) / 2 - e.w / 2);
+          break;
+        case "centerY":
+          e.y = round1((minY + maxB) / 2 - e.h / 2);
+          break;
+      }
+      // 对齐后可能贴到纸外，统一夹回纸内
+      this.clampToPaper(e);
     }
-    return row;
+    this.commit();
+    this.hooks.notify?.(`已${label}：${els.length} 个元素`);
   }
 
-  private numInput(
-    value: number,
-    step: number,
-    min: number,
-    max: number,
-    _precision: number,
-    apply: (v: number) => void
-  ): HTMLInputElement {
-    const input = document.createElement("input");
-    input.type = "number";
-    input.step = String(step);
-    input.min = String(min);
-    input.max = String(max);
-    input.value = String(value);
-    input.oninput = () => {
-      const v = Number(input.value);
-      if (Number.isFinite(v)) apply(v);
-    };
-    return input;
+  /** 纸张设置：不选中元素时也能改，随时可用。具体控件在 paper-panel.ts */
+  private paperSection(): HTMLElement {
+    this.paperPanel = new PaperPanel({
+      paper: () => this.doc.paper,
+      setPaperSize: (patch) => this.setPaperSize(patch),
+      setPaperSizeScaled: (w, h) => this.setPaperSizeScaled(w, h),
+      beginPaperEdit: () => {
+        this.paperEditBase = { w: this.doc.paper.widthMm, h: this.doc.paper.heightMm };
+      },
+      applyPaperEdit: () => this.applyPaperEdit(),
+      maxWidthMm: () => this.maxWidthMm(),
+      printableWidthMm: () => this.printableWidthMm(),
+      zoom: () => this.zoom,
+      setZoom: (z) => this.setZoom(z),
+      notify: (msg, err) => this.hooks.notify?.(msg, err),
+      print: this.print ?? undefined,
+    });
+    return this.paperPanel.root;
   }
 
   private fieldRow(el: LabelElement, f: FieldDef): HTMLElement {
@@ -1040,7 +1032,7 @@ export class LabelEditor {
         rec[f.key] = f.key === "rotate" ? Number(sel.value) : sel.value;
         this.commit();
       };
-      return this.labelWrap(f.label, sel);
+      return labelWrap(f.label, sel);
     }
 
     if (f.kind === "range") {
@@ -1057,7 +1049,7 @@ export class LabelEditor {
         val.textContent = input.value;
         this.commit();
       };
-      const wrap = this.labelWrap(f.label, input);
+      const wrap = labelWrap(f.label, input);
       wrap.appendChild(val);
       return wrap;
     }
@@ -1086,7 +1078,7 @@ export class LabelEditor {
         rec[f.key] = input.value;
         this.commit();
       };
-      return this.labelWrap(f.label, input);
+      return labelWrap(f.label, input);
     }
 
     /* 宽和中心 X 是耦合的：改宽要守住中心，改中心要带着宽度平移。
@@ -1094,12 +1086,11 @@ export class LabelEditor {
     if (f.kind === "num" && (f.key === "w" || f.key === "cx")) {
       const box = containerOf(this.doc.paper);
       const isCx = f.key === "cx";
-      const input = this.numInput(
+      const input = numInput(
         isCx ? centerOf(el) : el.w,
         0.1,
         isCx ? 0 : MIN_WIDTH_MM,
         box,
-        1,
         (v) => {
           const res = isCx
             ? placeByCenter(el, { centerMm: v, containerMm: box })
@@ -1114,22 +1105,21 @@ export class LabelEditor {
           this.commit();
         }
       );
-      return this.labelWrap(isCx ? "中心 X" : f.label, input, f.unit);
+      return labelWrap(isCx ? "中心 X" : f.label, input, f.unit);
     }
 
     // num
-    const input = this.numInput(
+    const input = numInput(
       Number(rec[f.key] ?? 0),
       f.step ?? 1,
       f.min ?? -999,
       f.max ?? 999,
-      f.step && f.step < 1 ? 1 : 0,
       (v) => {
         rec[f.key] = v;
         this.commit();
       }
     );
-    return this.labelWrap(f.label, input, f.unit);
+    return labelWrap(f.label, input, f.unit);
   }
 
   /* ------------------------------------------------------------ 图片 */
@@ -1139,18 +1129,13 @@ export class LabelEditor {
       const dataUrl = await this.hooks.pickImage?.();
       if (!dataUrl) return;
       el.dataUrl = dataUrl;
-      this.cache.image.delete(dataUrl);
+      forgetImage(this.cache, dataUrl);
       this.commit();
       this.hooks.notify?.("图片已载入");
     } catch (e) {
       this.hooks.notify?.(`载入图片失败：${(e as Error).message}`, true);
     }
   }
-}
-
-/** 供外部构造空白文档用：保持与编辑器一致的类型收窄 */
-export function ensureElement<T extends LabelElement>(el: T): T {
-  return el;
 }
 
 export type {

@@ -17,11 +17,6 @@ export function mmToDots(mm: number, dpi: number): number {
   return Math.round((mm * dpi) / MM_PER_INCH);
 }
 
-/** 点 → 毫米 */
-export function dotsToMm(dots: number, dpi: number): number {
-  return (dots * MM_PER_INCH) / dpi;
-}
-
 /** 每毫米多少点（渲染时的高频换算，缓存成函数返回值即可） */
 export function dotsPerMm(dpi: number): number {
   return dpi / MM_PER_INCH;

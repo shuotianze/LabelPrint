@@ -15,13 +15,16 @@ val tauriProperties = Properties().apply {
 }
 
 android {
-    compileSdk = 37
+    /* 模板默认是 37，但 API 37 的正式 SDK 平台还没发布（本地 sdkmanager 装不上，
+     * 只有 build-tools 37 可用），所以这里降到 36。等 37 正式发布后改回 37 即可。
+     * 注意：gen/android 是 `tauri android init` 生成的，重新 init 会覆盖这处修改。 */
+    compileSdk = 36
     namespace = "fun.shuo.labelprint"
     defaultConfig {
         manifestPlaceholders["usesCleartextTraffic"] = "false"
         applicationId = "fun.shuo.labelprint"
         minSdk = 26
-        targetSdk = 37
+        targetSdk = 36
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
     }

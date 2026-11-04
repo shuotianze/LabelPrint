@@ -229,6 +229,24 @@ input[type="number"], select {
 }
 .el-box.hidden-el { opacity: 0.3; border-style: dotted; }
 
+/* 画布上就地编辑文字：盖在元素位置上，字号/对齐跟着元素走，所见即所得 */
+.inline-editor {
+  position: absolute;
+  z-index: 10;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--accent);
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.96);
+  color: #000;
+  font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+  resize: none;
+  overflow: hidden;
+  outline: none;
+  white-space: pre-wrap;
+}
+
 /* 纸比打印头宽时，画布右侧那条"打不到"的区域 */
 .dead-zone {
   position: absolute;
@@ -279,9 +297,60 @@ input[type="number"], select {
   flex: 0 0 304px;
 }
 
-.sheet-bar { display: none; }
-.icon-btn { display: none; }
-.scrim { display: none; }
+/* 手机专用件：桌面上整块不显示（底部操作条、模板行、加元素快捷栏、标签页、提示条） */
+.dock, .add-bar, .tpl-row, .tabbar, .toast { display: none; }
+
+/* ---- 模板的保存/重命名面板与操作菜单 ----
+ * 桌面是居中小窗，手机在 @media 里改成从底部升起。
+ * 用它替代 window.prompt：安卓 WebView 里 prompt 经常不弹、直接返回 null。 */
+.tpl-sheet, .tpl-menu {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.28);
+}
+.tpl-sheet[hidden], .tpl-menu[hidden] { display: none; }
+
+.tpl-sheet-body, .tpl-menu-body {
+  width: 320px;
+  max-width: calc(100vw - 32px);
+  background: #fff;
+  border-radius: 12px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+}
+.tpl-sheet-body h2, .tpl-menu-body h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+.tpl-sheet-body input {
+  font: inherit;
+  font-size: 15px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  width: 100%;
+}
+.tpl-warn {
+  margin: 0;
+  min-height: 16px;
+  font-size: 12.5px;
+  color: var(--danger);
+}
+.tpl-menu-body button {
+  min-height: 44px;
+  font-size: 15px;
+  border-radius: 10px;
+}
+.tpl-menu-body button.danger { color: var(--danger); border-color: #f0cfcb; background: #fdf5f4; }
 
 .inspector {
   flex: 1 1 auto;
@@ -351,6 +420,13 @@ input[type="number"], select {
 .row .field { flex: 1 1 0; min-width: 0; }
 .row .field > span { width: 20px; flex: 0 0 20px; }
 
+/* 纸张区：每一行之间留出呼吸感，别让"纸型"和"宽/高"贴成一块 */
+.paper-panel > .field,
+.paper-panel > .row {
+  margin-top: 12px;
+}
+.paper-row .field { gap: 6px; }
+
 .row-actions {
   display: flex;
   gap: 6px;
@@ -387,6 +463,14 @@ input[type="number"], select {
 .log .err { color: var(--danger); }
 .mt { margin-top: 14px; }
 .hint { font-size: 13px; color: var(--muted); line-height: 1.6; }
+/* 当前纸型的大字显示，替代原来那个"打印头点数"下拉 */
+.size-line {
+  margin: 10px 0 2px;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: var(--text);
+}
 
 /* 扫描时"显示全部蓝牙设备"的勾选框 */
 .check {
@@ -430,139 +514,419 @@ input[type="range"] {
 }
 
 /* ==================================================================
-   手机 / 平板竖屏：单栏 + 抽屉 + 底部属性面板
+   手机 / 平板竖屏：单页编辑 + 底部固定操作条 + 底部标签页
    ------------------------------------------------------------------
-   断点 860px 和 main.ts 里的 MOBILE_Q 必须一致。
-   桌面布局（三栏：设备 288 | 画布 | 属性 304）在 360px 宽的手机上
-   只剩中间那条缝，根本没法点，所以整块换掉而不是"缩小字号"。
+   断点 860px 和 ui/breakpoints.ts 里的 MOBILE_MAX_PX 必须一致。
+
+   这里不是把桌面三栏按比例缩一缩：手机上整页是一条竖着的流
+     · 预览卡片 → 加元素快捷栏 → 属性区（常驻，跟着页面滚）
+     · 「份数 / 标签类型 / 浓度 / 打印」收进底部固定区，永远够得着
+     · 左侧设备栏变成底部「设备」标签页（整页显示，不再是抽屉）
+   属性区**不做成弹出面板**：一弹一收画布尺寸跟着变，
+   想加选第二个元素时落点全变了，而且面板会盖住画布。
    ================================================================== */
 @media (max-width: 860px) {
-  header { padding: 8px 10px; gap: 8px; }
-  header h1 { font-size: 16px; }
-  .icon-btn {
-    display: inline-flex;
+  /* ---- 全局：浅灰底 + 白色卡片 ---- */
+  body { background: #f1f1ef; }
+
+  header {
+    padding: calc(8px + env(safe-area-inset-top)) 14px 8px;
+    gap: 8px;
+    background: #fff;
+  }
+  header h1 { font-size: 17px; font-weight: 600; }
+
+  /* 手机上一屏放完：页面本身不滚动，画布按"能用的宽 × 能用的高"自动缩放 */
+  main {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    padding-bottom: calc(150px + env(safe-area-inset-bottom));
+  }
+
+  /* ---- 编辑页 ---- */
+  .workspace {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+    padding: 10px 12px 0;
+    overflow: hidden;
+  }
+  /* 桌面工具栏整块隐藏，功能都在 add-bar 和 dock 里 */
+  .toolbar { display: none; }
+
+  /* 预览是一张白卡片，占满剩余高度；里面的画布由编辑器按这个框缩放 */
+  .stage-wrap {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
     align-items: center;
     justify-content: center;
-    width: 38px;
-    height: 38px;
-    padding: 0;
-    font-size: 18px;
-    line-height: 1;
+    padding: 12px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: #fff;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+    overflow: hidden;
   }
-  #model-badge {
-    max-width: 38vw;
+
+  /* ---- 加元素快捷栏（预览下一排横向滑动的按钮） ---- */
+  .add-bar {
+    display: flex;
+    flex: 0 0 auto;
+    gap: 8px;
+    overflow-x: auto;
+    margin-top: 10px;
+    padding-bottom: 2px;
+    scrollbar-width: none;
+  }
+  .add-bar::-webkit-scrollbar { display: none; }
+  .add-bar button {
+    flex: 0 0 auto;
+    min-height: 40px;
+    padding: 0 16px;
+    border-radius: 999px;
+    background: #fff;
+    font-size: 14px;
+  }
+
+  /* ---- 模板卡片行：套模板是排版第一步，所以放在"加元素"上面 ----
+   * 收起时只露 4 张，点「全部」展开成横向滚动的整排；
+   * 卡片是缩略图 + 名字，当前套用的那张描边高亮。 */
+  .tpl-row {
+    display: flex;
+    flex-direction: column;
+    flex: 0 0 auto;
+    margin-top: 10px;
+  }
+  .tpl-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 30px;
+  }
+  .tpl-title { font-size: 13px; color: var(--muted); }
+  .tpl-current {
+    font-size: 12.5px;
+    color: var(--accent);
+    max-width: 42%;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  .tpl-mini {
+    flex: 0 0 auto;
+    min-height: 28px;
+    padding: 0 10px;
+    font-size: 12.5px;
+    border-radius: 999px;
+    color: var(--accent);
+    border-color: #cddff5;
+    background: #f4f8ff;
+  }
+  .tpl-mini[hidden] { display: none; }
 
-  main { flex-direction: column; }
-
-  .workspace {
-    padding: 10px;
+  .tpl-cards {
+    display: flex;
     gap: 8px;
+    margin-top: 6px;
+    padding-bottom: 2px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .tpl-cards::-webkit-scrollbar { display: none; }
+  /* 收起态：前面的卡片只露 4 张，第 5 张起全藏起来（"＋"那张用 .add 单独保住） */
+  .tpl-row:not(.expanded) .tpl-cards > .tpl-card:not(.add):nth-child(n+5) { display: none; }
+
+  .tpl-card {
+    position: relative;
+    flex: 0 0 auto;
+    width: 76px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    padding: 6px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: #fff;
+    cursor: pointer;
+  }
+  .tpl-card.on {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px rgba(26, 111, 212, 0.22);
+  }
+  .tpl-card.add {
+    align-items: center;
+    justify-content: center;
+    border-style: dashed;
+    color: var(--muted);
+    font-size: 22px;
+    min-height: 76px;
+  }
+  .tpl-thumb {
+    width: 100%;
+    height: 42px;
+    object-fit: contain;
+    background: #fff;
+    border-radius: 6px;
+    image-rendering: auto;
+  }
+  .tpl-name {
+    font-size: 11.5px;
+    line-height: 1.25;
+    color: var(--text);
+    text-align: center;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .tpl-meta {
+    font-size: 10.5px;
+    color: var(--muted);
+    text-align: center;
+    white-space: nowrap;
+  }
+  .tpl-kebab {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    font-size: 13px;
+    line-height: 1;
+    border: 0;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.86);
+    color: var(--muted);
+  }
+
+  /* 手机上这两个面板从底部升起，拇指够得着 */
+  .tpl-sheet, .tpl-menu { align-items: flex-end; }
+  .tpl-sheet-body, .tpl-menu-body {
+    width: 100%;
+    max-width: none;
+    border-radius: 14px 14px 0 0;
+    padding: 16px 16px calc(16px + env(safe-area-inset-bottom));
+  }
+  .tpl-sheet-body input { font-size: 16px; min-height: 44px; }
+  .tpl-sheet-body .row-actions button { min-height: 44px; font-size: 15px; }
+
+  /* 日志区在手机上藏起来，反馈改走 toast */
+  .log { display: none; }
+
+  /* 手机上别让整页跟着手指回弹（下拉刷新会打断拖拽元素） */
+  html, body { overscroll-behavior: none; }
+
+  /* 16px 起步，避免 WebView 聚焦输入框时自动放大整页 */
+  .field input, .field select, .field textarea {
+    font-size: 16px;
+    min-height: 40px;
+  }
+
+  /* ---- 设备页：原来的左栏整页显示（这一页可以自己滚） ---- */
+  .sidebar {
+    position: static;
+    display: none;
+    width: auto;
+    max-width: none;
+    flex: 1 1 auto;
+    min-height: 0;
+    border-right: 0;
+    background: transparent;
+    padding: 12px 14px 24px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  body.tab-devices .sidebar { display: block; }
+  body.tab-devices .workspace,
+  body.tab-devices .sheet { display: none; }
+  /* 设备页里的板块也做成白卡片，跟编辑页一个观感 */
+  .sidebar .device,
+  .sidebar .device-list,
+  .sidebar table.info,
+  .sidebar .hint {
+    background: #fff;
+    border-radius: 10px;
+  }
+  .sidebar .device-list { border: 1px solid var(--line); padding: 4px; }
+  .sidebar table.info { padding: 4px 12px; }
+  .sidebar .hint { padding: 10px; border: 1px solid var(--line); }
+
+  /* ---- 属性区：常驻在页面里，不弹出；高度固定，只有它自己内部滚 ---- */
+  .sheet {
+    position: static;
+    display: flex;
+    flex-direction: column;
+    width: auto;
+    flex: 0 0 auto;
+    /* 固定高度：选中/取消选中时属性区不忽高忽低，画布缩放也就不会跟着变 */
+    height: min(32vh, 300px);
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    transform: none;
+    padding: 10px 12px 14px;
     overflow: hidden;
   }
 
-  /* 工具栏允许换行：手机竖屏本来就有纵向空余，
-   * 强行挤成一行横向滚动会让「线条 / 图片 / 打印」藏在屏幕外，等于没有按钮 */
-  .toolbar {
-    flex-wrap: wrap;
-    gap: 8px;
+  .inspector {
+    flex: 1 1 auto;
+    min-height: 0;
+    max-height: none;
+    padding: 0;
+    border-left: 0;
+    background: transparent;
+    overflow-y: auto;
+    overscroll-behavior: contain;
   }
-  .toolbar button { flex: 0 0 auto; }
-  .toolbar label, .toolbar .hint, .toolbar .val { flex: 0 0 auto; }
-  /* 「打印」独占一行，整条撑满，手指容易按到 */
-  #btn-print {
-    flex: 1 0 100%;
-    order: 99;
-    min-height: 46px;
-    font-size: 16px;
+  /* 每一段（元素 / 批量对齐 / 纸张）各是一张白卡片 */
+  .inspector > div {
+    background: #fff;
+    border-radius: 12px;
+    padding: 12px 12px 14px;
+  }
+  .inspector > div + div { margin-top: 10px; }
+  .inspector h2 { font-size: 13px; letter-spacing: 0.04em; }
+
+  /* 表单行：标签窄一点，控件占满剩余宽度，手指好点 */
+  .field { font-size: 14px; }
+  .field > span { width: 56px; flex: 0 0 56px; }
+  .row .field > span { width: 18px; flex: 0 0 18px; }
+
+  .row-actions button {
+    min-height: 40px;
+    font-size: 14px;
+    padding: 6px 8px;
   }
 
-  /* 竖屏空间富余，画布上下居中比顶在左上角好看；
-   * 缩放已按宽度拟合，正常情况下不会溢出 */
-  .stage-wrap { padding: 10px; align-items: center; }
-  input[type="range"] { width: 84px; }
-  .log { max-height: 62px; font-size: 12px; }
-
-  /* ---- 左侧抽屉：设备 / 打印机信息 / 模板 ---- */
-  .sidebar {
-    position: fixed;
-    top: 0;
-    bottom: 0;
-    left: 0;
-    width: 86vw;
-    max-width: 330px;
-    flex: none;
-    z-index: 60;
-    transform: translateX(-101%);
-    transition: transform 0.22s ease;
-    box-shadow: 0 0 24px rgba(0, 0, 0, 0.12);
-    padding-top: calc(16px + env(safe-area-inset-top));
-    padding-bottom: calc(16px + env(safe-area-inset-bottom));
-  }
-  body.drawer-open .sidebar { transform: none; }
-
-  /* ---- 底部属性面板 ---- */
-  .sheet {
+  /* ---- 底部固定区：信息 + 份数/打印 + 标签页 ---- */
+  .dock {
+    display: flex;
+    flex-direction: column;
     position: fixed;
     left: 0;
     right: 0;
     bottom: 0;
-    width: auto;
-    flex: none;
-    z-index: 55;
-    max-height: 62vh;
-    background: var(--panel);
+    z-index: 60;
+    background: #fff;
     border-top: 1px solid var(--line);
-    border-radius: 14px 14px 0 0;
-    box-shadow: 0 -6px 24px rgba(0, 0, 0, 0.1);
-    transform: translateY(101%);
-    transition: transform 0.22s ease;
+    box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.05);
     padding-bottom: env(safe-area-inset-bottom);
   }
-  body.sheet-open .sheet { transform: none; }
 
-  .sheet-bar {
+  .dock-info {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 10px 12px 6px;
-    position: relative;
+    padding: 8px 14px 0;
+    font-size: 13px;
+    color: var(--muted);
   }
-  .sheet-grip {
-    position: absolute;
-    left: 50%;
-    top: 5px;
-    width: 38px;
-    height: 4px;
-    margin-left: -19px;
-    border-radius: 2px;
-    background: #d8d6d0;
+  .dock-info span {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
-  .sheet-title { flex: 1 1 auto; font-size: 13px; color: var(--muted); }
-  .sheet-bar button { min-height: 32px; padding: 4px 12px; font-size: 13px; }
+  .dock-info button {
+    flex: 0 0 auto;
+    min-height: 30px;
+    padding: 0 12px;
+    font-size: 13px;
+    border-radius: 999px;
+    color: var(--accent);
+    border-color: #cddff5;
+    background: #f4f8ff;
+  }
 
-  .inspector {
-    max-height: calc(62vh - 48px);
-    padding: 4px 14px 16px;
-    border-left: 0;
+  .dock-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 14px 10px;
   }
 
-  /* ---- 遮罩 ---- */
-  .scrim {
+  /* 份数步进器：手指点 ± 比在数字框里敲字快得多 */
+  .stepper {
+    display: flex;
+    align-items: center;
+    flex: 0 0 auto;
+    height: 46px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .stepper button {
+    width: 44px;
+    min-height: 46px;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: #fff;
+    font-size: 20px;
+    line-height: 1;
+  }
+  .stepper span {
+    min-width: 58px;
+    text-align: center;
+    font-size: 14px;
+  }
+
+  /* 没连接时是灰底"先连接打印机"，连上后才变蓝的"打印" */
+  #m-print {
+    flex: 1 1 auto;
+    min-height: 46px;
+    font-size: 16px;
+    border-radius: 10px;
+    background: #fff;
+    color: var(--muted);
+    border-color: var(--line);
+  }
+  #m-print.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+
+  .tabbar {
+    display: flex;
+    border-top: 1px solid var(--line);
+  }
+  .tabbar button {
+    flex: 1 1 0;
+    min-height: 46px;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--muted);
+    font-size: 15px;
+  }
+  .tabbar button.on { color: var(--accent); font-weight: 600; }
+
+  /* ---- 提示条 ---- */
+  .toast {
     display: block;
     position: fixed;
-    inset: 0;
-    z-index: 50;
-    background: rgba(20, 20, 20, 0.28);
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.2s;
+    left: 50%;
+    bottom: calc(164px + env(safe-area-inset-bottom));
+    transform: translateX(-50%);
+    z-index: 80;
+    max-width: 84vw;
+    padding: 9px 15px;
+    border-radius: 999px;
+    background: rgba(28, 28, 26, 0.92);
+    color: #fff;
+    font-size: 13px;
+    line-height: 1.4;
+    text-align: center;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
   }
-  body.drawer-open .scrim,
-  body.sheet-open .scrim { opacity: 1; pointer-events: auto; }
+  .toast[hidden] { display: none; }
+  .toast.err { background: rgba(192, 57, 43, 0.95); }
 }
 
 /* ---- 触屏：手指比鼠标指针粗，所有可点区域先放大一圈 ---- */

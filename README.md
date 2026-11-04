@@ -1,4 +1,4 @@
-# 标签打印机 App（跨平台）
+﻿# 标签打印机 App（跨平台）
 
 自己做的标签打印工具，支持 NIIMBOT 系列热敏标签机（B1 / B21 / D110 / H1S）。
 Windows / macOS / Linux / Android 一套代码，界面和业务逻辑全部自研。
@@ -25,8 +25,11 @@ Windows / macOS / Linux / Android 一套代码，界面和业务逻辑全部自�
 ## 目录结构
 
 ```
-label_app/
+LabelPrint/
 ├── index.html                    入口页（含白屏兜底错误显示）
+├── eslint.config.js              代码规范
+├── LICENSE
+├── .github/workflows/ci.yml       前端 + Rust 两段 CI
 ├── src/
 │   ├── main.ts                   应用装配：设备、工具栏、打印
 │   ├── styles.css                白色极简样式
@@ -34,16 +37,22 @@ label_app/
 │   │   └── blec-client.ts        ★ 蓝牙适配器：把 blec 接到协议栈上
 │   ├── core/
 │   │   ├── print-service.ts      ★ 打印流程封装
-│   │   ├── label-doc.ts          标签文档模型（元素、模板、本地存储）
+│   │   ├── label-doc.ts          标签文档模型（元素、模板、本地存储、载入校验）
 │   │   ├── presets.ts            12 套内置模板（按 48×30 设计，自动适配纸张）
 │   │   ├── align.ts              ★ 以中间点为基准的横向布局（中心 → 左右边界）
 │   │   └── units.ts              mm ↔ 点 换算
 │   ├── render/
 │   │   └── render-label.ts       ★ 把标签文档画成位图（超采样落墨/抖动/居中）
 │   └── ui/
-│       └── editor.ts             ★ 编辑器：选中、拖拽、缩放、属性面板
+│       ├── editor.ts             ★ 编辑器：选中、缩放、属性面板
+│       ├── panel-fields.ts       属性面板的字段描述表
+│       ├── paper-panel.ts        纸张设置区（纸型、宽高、缩放）
+│       ├── drag.ts               拖动与缩放手柄
+│       ├── form-controls.ts      标签/数字输入框小工具
+│       └── breakpoints.ts        手机单栏布局断点（唯一来源）
 ├── tests/
-│   ├── smoke.html                编辑器冒烟测试（真浏览器里跑，79 项）
+│   ├── core.test.ts              ★ 单元测试（对齐算法 / 单位 / 模板载入校验）
+│   ├── smoke.html                编辑器冒烟测试（真浏览器里跑）
 │   ├── presets-preview.html      所有内置模板一屏预览，可带 ?w=40&h=20 换纸型
 │   ├── zoom-preview.html         单个模板 2 倍放大，用来校对细节（?only=material）
 │   ├── align-diagram.html        中心对齐示意图（docs/align-center.png 就出自这里）
@@ -62,6 +71,9 @@ label_app/
 npm install          # 首次
 npm run app          # = tauri dev，开发模式（自动起 vite + 编译 Rust）
 npm run dist         # 打安装包（release，开了 LTO，10 分钟以上是正常的）
+npm test             # 单元测试（vitest）
+npm run lint         # 代码规范（eslint）
+npm run build        # 类型检查 + 前端打包（CI 里跑的就是这个）
 ```
 
 只调界面（不连打印机）用 `npm run dev`，浏览器打开 http://localhost:1420 。
@@ -69,24 +81,54 @@ npm run dist         # 打安装包（release，开了 LTO，10 分钟以上是�
 
 ### 安卓
 
-需要 JDK 17 + Android SDK（platform 37 / build-tools 36+）+ NDK 27，装在哪儿都行，
-只要把下面三个变量指过去：
+需要 JDK 17 + Android SDK + NDK 27。本机已验证可用的组合：
+
+| 组件 | 版本 | 说明 |
+|---|---|---|
+| JDK | 17（Liberica） | `JAVA_HOME` 指向它 |
+| SDK Platform | **36** | 模板默认 `compileSdk = 37`，但 API 37 的正式平台还没发布，已改成 36 |
+| Build-Tools | 36.0.0 | 37.0.0 也能装，但 AGP 9 仍会要 36.0.0 |
+| NDK | 27.2.12479018 | 与 `tauri-plugin-blec` 匹配 |
+| Rust targets | aarch64 / armv7 / i686 / x86_64-linux-android | `rustup target add ...` |
 
 ```bash
 export JAVA_HOME=/path/to/jdk17
 export ANDROID_HOME=/path/to/android-sdk
 export NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018
-npx tauri android build --apk --target aarch64     # 只出 arm64，cargo 有缓存约 4 分钟
+npx tauri android build --apk --target aarch64     # 只出 arm64，cargo 有缓存约 2 分钟
 ```
+
+本机网络对 `services.gradle.org`、`repo.maven.apache.org`、`plugins.gradle.org` 的 TLS 会被拦，
+`gen/android` 里已经改成镜像源（重新 `tauri android init` 会覆盖，需要改回去）：
+
+- `gradle/wrapper/gradle-wrapper.properties` → 腾讯云 Gradle 镜像
+- `build.gradle.kts` / `buildSrc/build.gradle.kts` → 阿里云 google / public 镜像
+- `buildSrc/settings.gradle.kts` → 阿里云 gradle-plugin 镜像（`kotlin-dsl` 插件只能从这里拿到）
 
 CLI 只产出未签名的 `app-universal-release-unsigned.apk`，签名得自己做（Tauri 2.12 不再读
 `keystore.properties`）。密钥文件和口令都放在仓库外，用环境变量传：
 
 ```bash
 BT=$ANDROID_HOME/build-tools/36.0.0
-"$BT/zipalign.exe" -p -f 4 unsigned.apk release/LabelPrint.apk
-"$BT/apksigner.bat" sign --ks "$KS" --ks-key-alias "$KS_ALIAS" \
+# Windows 上这两个工具是 zipalign.exe / apksigner.bat，Linux/macOS 无后缀
+"$BT/zipalign" -p -f 4 unsigned.apk release/LabelPrint.apk
+"$BT/apksigner" sign --ks "$KS" --ks-key-alias "$KS_ALIAS" \
   --ks-pass env:KS_PASS --key-pass env:KEY_PASS release/LabelPrint.apk
+"$BT/apksigner" verify release/LabelPrint.apk
+```
+
+**产物自检**：正常的 release APK 约 6.5MB，且必须包含
+`lib/arm64-v8a/liblabel_app_lib.so`（约 4.9MB）。如果只有 1.x MB，说明原生库没打进包——
+`tauri android build` 在沙箱/受限会话里会把 `jniLibs` 做成指向缓存目录的符号链接，
+打包时链接失效。处理办法：把 `target/aarch64-linux-android/release/liblabel_app_lib.so`
+复制成真实文件后再打包：
+
+```bash
+cp src-tauri/target/aarch64-linux-android/release/liblabel_app_lib.so \
+   src-tauri/gen/android/app/src/main/jniLibs/arm64-v8a/
+cd src-tauri/gen/android && ./gradlew :app:assembleUniversalRelease \
+  -x rustBuildUniversalRelease -x rustBuildArm64Release -x rustBuildArmRelease \
+  -x rustBuildX86Release -x rustBuildX86_64Release
 ```
 
 三个安卓特有约束，改代码时容易踩：
@@ -100,9 +142,12 @@ BT=$ANDROID_HOME/build-tools/36.0.0
   `res/mipmap-anydpi-v26/ic_launcher.xml` 必须存在，桌面上才稳定有图标。
 
 冒烟测试：`npm run dev` 后打开 http://localhost:1420/tests/smoke.html ，
-页面逐条显示 PASS/FAIL（79 项），覆盖渲染、增删、纸张换算、序列化、
+页面逐条显示 PASS/FAIL（110 项），覆盖渲染、增删、纸张换算、序列化、
+多选加选与批量对齐、双击就地编辑、
 文字居中（数像素算偏差）、中心对齐（宽 30/50 必须同中心）、48/50 两档位图宽度必须不同、换纸型缩放、
 落墨后不留灰边、条码明文不被切底，以及 12 套内置模板的元素越界与分隔线不压文字检查。
+
+纯逻辑部分另有 `npm test`（vitest）：对齐/夹紧/居中不变、mm↔点换算、模板载入时的字段兜底与非法元素剔除。
 
 ## 三个必须知道的技术点
 
@@ -211,7 +256,7 @@ cx 超出区间时整体平移到最近的边界；w 比容器还宽时中心强
 
 ## 内置模板
 
-侧边栏 → 模板 → 内置模板，共 12 套，选中即套用，纸张沿用当前设置：
+侧边栏 → 模板 → 内置模板（手机在编辑页的模板卡片行里点），共 12 套，选中即套用，纸张沿用当前设置：
 
 | 模板 | 适合 | 内容 |
 |---|---|---|
@@ -262,7 +307,10 @@ cx 超出区间时整体平移到最近的边界；w 比容器还宽时中心强
 | 参数 | 作用 | B1 上的值 |
 |---|---|---|
 | 纸宽 | 这一页的位图有多宽，直接下发给打印机做页宽 | 50mm = 400 点 / 48mm = 384 点 |
-| 打印头 | 整机能打到的上限，只用来封顶 | 400 点（机型表写 384，实测能打满 50mm） |
+| 打印头 | 整机能打到的上限，只用来封顶 | 固定 400 点（机型表写 384，实测能打满 50mm） |
+
+打印头点数**不再提供界面切换**：B1 实测就是 400 点，选 384 只会白白少打 2mm。
+面板上改为直接显示当前纸型（例如 `50×30 mm`），旧模板里存的 384 仍然生效。
 
 这里曾经有个**"设 48 和设 50 打出来一模一样"**的 bug：画布宽度原来恒等于打印头点数，
 纸宽只影响界面上的数字，位图永远是 400 点（50mm），打印机收到的两包数据完全相同。
@@ -291,14 +339,15 @@ cx 超出区间时整体平移到最近的边界；w 比容器还宽时中心强
 |---|---|---|
 | 原样交给编码器 | 粗体糊、字腔被填死 | 编码器只认纯白 `#ffffff`，**任何灰边都算黑**，等于给每个字描了一圈边 |
 | 1 倍画完直接卡阈值 | 2mm 以上干净，1.4~1.8mm 注释字断笔 | 小字只有 11~14 像素高，笔画边缘一半是灰，灰一砍笔画就断 |
-| **现在**：3 倍超采样 + 覆盖率落墨 | 大小字号都清楚 | 按 3 倍画，每个输出点看 9 个样本里被笔画盖住多少，超过 40% 就落墨 |
+| **现在**：3 倍超采样 + 覆盖率落墨 | 大小字号都清楚 | 按 3 倍画，每个输出点看 9 个样本里被笔画盖住多少，超过 50% 就落墨 |
 
 细节配套：
 
 - 文字位图按"内容+字号+对齐+框尺寸"缓存，拖拽时一帧从 18ms 降到 2.2ms
 - 水平居中按**墨迹包围盒**对齐（汉字左右字面留白不对称，按字宽居中会偏左半根笔画）
 - 矩形/线条一律整数像素实心画，不用 `strokeRect`（描边全是灰边）
-- 二维码在"取整后还能保住 85% 尺寸"时按整数倍出图，模组落在整像素上
+- 二维码在"取整后还能保住 80% 尺寸"时按整数倍出图，模组落在整像素上
+- 图片的二值化结果按"框尺寸+填充+阈值"缓存，拖带照片的标签不再每帧重算
 - 一维码先用 1 像素/模块量自然宽度，再整数倍放大，绝不拉伸
 - 一维码的明文**不用** jsbarcode 自带的那套：它把基线放在画布最底边，数字下半截会被切掉；
   改成"条由库画、明文走自己的超采样管线"，还顺手解决了明文比码宽时被左右裁掉的问题
@@ -307,21 +356,34 @@ cx 超出区间时整体平移到最近的边界；w 比容器还宽时中心强
 ## 手机端界面
 
 桌面是三栏（设备 288 | 画布 | 属性 304），在 360px 宽的手机上中间那条缝根本点不着。
-所以 ≤860px 时整块换成单栏 + 两个浮层，**断点在 `src/styles.css` 和 `main.ts` 的 `MOBILE_Q`
-里各写一份，改要一起改**：
+所以 ≤860px 时整块换成"一条竖着的单页 + 底部固定操作条"。断点数值只有一个来源：
+`src/ui/breakpoints.ts`（`MOBILE_MAX_PX`），`styles.css` 里的 `@media (max-width: 860px)`
+需要跟着同一个数字改：
 
 | 桌面 | 手机（≤860px） |
 |---|---|
-| 左侧栏常驻 | 变成左侧抽屉，标题栏 ☰ 打开，点设备后自动收起 |
-| 右侧属性栏常驻 | 变成底部面板，选中元素自动弹出，点空白或「收起」关闭 |
-| 画布 1:1 | `editor.fitToWidth()` 按可用宽度拟合缩放，换纸张时重算 |
+| 左侧栏常驻 | 变成底部「设备」标签页（整页显示：扫描、打印机信息、模板） |
+| 右侧属性栏常驻 | 直接排在页面里（预览 → 加元素快捷栏 → 属性卡片），**不弹面板** |
+| 两排工具栏 | 加元素收成预览下一排横向滑动的胶囊按钮；份数/标签类型/浓度/打印收进底部固定区 |
+| 画布 1:1 | `editor.fitToBox()` 按预览区可用的**宽和高**同时拟合缩放，整张标签一屏放得下 |
 | 鼠标悬停 | `@media (pointer: coarse)` 把按钮抬到 40px、缩放手柄 9px→18px |
+| 双击编辑 | 连点两下同一元素（320ms / 30px 内） |
+| Shift+点击多选 | 直接点元素加选（点一个选一个），再点一次已选中的就取消它，点画布空白处取消全部；长按也能单独取消 |
+| 日志区 | 底部一闪而过的提示条（toast），2.6 秒后消失 |
 
-`#inspector` 的内容由编辑器整块重建，所以「收起」按钮和面板外壳放在它的父节点 `.sheet` 上，
-不要塞进 `#inspector` 里（会被冲掉）。
+属性区为什么不做成"选中元素弹出来"的底部面板：一弹一收画布尺寸和位置都会变，
+想再加选第二个元素时手指落点全变了，而且面板本身会盖住画布下半部分。
+现在属性区常驻在页面流里，选中变化只是就地换掉卡片内容，画布位置不动。
+
+触摸手势不能靠 `dblclick`（部分 WebView 不派发）、也没有 Shift，所以 `drag.ts` 自己做了
+"轻点 / 连点 / 长按"三态识别：位移超过 6px 一律按拖动处理，取消另外两个手势。
+轻点是**累加**选中（不再"清空重选"），连点判定还要求是**同一个元素**，
+否则连着点两个元素会被误判成双击。长按 500ms 是加选/减选，用来单独取消点错的那个。
+另外，只有 `pointerType` 为 `touch` / `pen` 才走触摸路径——合成事件的 `pointerType` 是空串，
+按"不等于 mouse"判断会把桌面和自动化环境误伤成触摸。
 
 看手机布局不用真机：`npm run dev` 后打开 http://localhost:1420/tests/mobile-preview.html ，
-用 390×844 的 iframe 模拟；加 `?two=1` 会多一台并自动选中元素，用来看底部面板。
+用 390×844 的 iframe 模拟；加 `?two=1` 会多出一台。
 
 ## 已实现功能
 
@@ -329,12 +391,18 @@ cx 超出区间时整体平移到最近的边界；w 比容器还宽时中心强
 - 纸张尺寸设置：预设 + 自定义宽高（mm），换纸型自动等比缩放版式
 - 标签编辑器：文字 / 一维码 / 二维码 / 矩形 / 线条 / 图片
   - 点击选中、拖动移动、右下角拖拽缩放（以中心为基准左右对称伸缩）、方向键微调（Shift 加速）
+  - 双击文字直接在画布上改内容（Esc 取消、Ctrl+Enter 完成、Enter 换行）
+  - 多选：Shift/Ctrl 点元素加选（手机直接点元素加选、点空白处取消），拖动其中任意一个整组一起移动；
+    批量左对齐 / 右对齐 / 顶端对齐 / 底端对齐 / 水平居中 / 垂直居中，对齐基准是选中元素的外接矩形
   - 「宽」「中心 X」双向联动：改宽守住中心，改中心整体平移；一键「水平居中」
   - 文字默认上下左右居中，可单独改水平/垂直对齐
   - 按机型能力自动裁剪"标签类型"和"浓度"选项
   - 图片二值化（阈值可调）/ Floyd-Steinberg 抖动
-- 模板：12 套内置模板（自动适配纸张）+ 本地保存 / 载入 / 删除（localStorage）
-- 打印：份数、进度条、错误提示
+- 模板：12 套内置模板（自动适配纸张）+ 本地保存 / 载入 / 更新 / 重命名 / 复制 / 删除（localStorage，最多 30 份）
+  - 手机上模板是编辑页的卡片行（缩略图 + 当前模板高亮），保存走页内输入面板，不用 `window.prompt`
+  - 保存失败（存储配额不足）会明确提示；超出上限替换最旧一份时也会说明
+  - 载入时逐字段兜底：老模板缺字段自动补默认值，损坏的元素直接丢弃
+- 打印：份数（1~99）、进度条、错误提示；打印用文档重新离屏渲染，不复用屏幕预览画布
 
 ## 开发路线
 
@@ -345,7 +413,7 @@ cx 超出区间时整体平移到最近的边界；w 比容器还宽时中心强
 | P2 | 元素：文本 / 条码 / 二维码 / 图片 / 线框 | 完成 |
 | P3 | 模板保存与载入 | 完成（本地） |
 | P4 | 模板导入导出（JSON 文件）、多机型适配验证 | 待做 |
-| P5 | Android 打包（需 NDK）、自动更新 | 待做 |
+| P5 | Android 打包（APK 已出）、自动更新 | 打包完成 / 自动更新待做 |
 
 ## 注意
 

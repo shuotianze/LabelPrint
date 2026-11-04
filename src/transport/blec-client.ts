@@ -25,7 +25,7 @@ import {
   DisconnectEvent,
   RawPacketSentEvent,
 } from "@mmote/niimbluelib";
-import type { ConnectionInfo, NiimbotClientType, PaperInfo } from "@mmote/niimbluelib";
+import type { ConnectionInfo, NiimbotClientType } from "@mmote/niimbluelib";
 import * as blec from "@mnlphlp/plugin-blec";
 
 /** 精臣打印机的蓝牙服务 UUID（所有机型通用） */
@@ -121,6 +121,8 @@ export class TauriBleClient extends NiimbotAbstractClient {
   private serviceUuid: string = NIIMBOT_SERVICE_UUID;
   private deviceName = "";
   private lastAddress: string | null = null;
+  /** 连接代号：每建一次连接、每断一次都 +1，用来丢弃旧连接迟到的断开回调 */
+  private connGen = 0;
 
   constructor() {
     super();
@@ -135,12 +137,6 @@ export class TauriBleClient extends NiimbotAbstractClient {
      * 传 0 反而变成"第一次失败就断"。所以这里给一个足够大的数，等于关闭。 */
     this.setHeartbeatMaxFails(100000);
     this.setHeartbeatInterval(4000);
-  }
-
-  /** 读打印机当前的纸张信息（高/宽/间隙），用于"读取当前纸"按钮 */
-  async readPaperInfo(): Promise<PaperInfo> {
-    if (!this.isConnected()) throw new Error("打印机未连接");
-    return this.protocol.getPaperInfo();
   }
 
   /** 当前连接状态（父类的 abstract 要求） */
@@ -167,8 +163,15 @@ export class TauriBleClient extends NiimbotAbstractClient {
 
     await this.disconnect();
 
+    /* 每次连接分配一个新代号。旧连接被 disconnect() 后，它的断开回调
+     * 可能比新连接更晚到达（蓝牙栈回调是异步的），回调里先比对这个代号，
+     * 不是当前代号的直接忽略——否则旧回调会把**新连接**置空，
+     * 表现就是"刚连上就显示断开"。 */
+    const gen = ++this.connGen;
+
     const conn = await blec.connect(addr, () => {
       // 打印机被别的设备抢走、或超时休眠，都会走到这里
+      if (gen !== this.connGen) return;
       this.conn = null;
       this.charUuid = null;
       this.emit("disconnect", new DisconnectEvent());
@@ -201,17 +204,25 @@ export class TauriBleClient extends NiimbotAbstractClient {
     this.charUuid = target.characteristic;
     this.serviceUuid = target.service;
 
-    // 订阅通知：收到的字节直接喂给协议栈解析
-    await conn.subscribe(target.characteristic, target.service, (data: number[]) => {
-      this.processRawPacket(Uint8Array.from(data));
-    });
+    /* 订阅 / 握手任一步失败，都必须把已经建立的蓝牙连接断掉再抛出。
+     * 否则界面提示"连接失败"，底层却还占着打印机，用户再点连接就会
+     * 被打印机判成"另一台设备"而连不上。 */
+    try {
+      // 订阅通知：收到的字节直接喂给协议栈解析
+      await conn.subscribe(target.characteristic, target.service, (data: number[]) => {
+        this.processRawPacket(Uint8Array.from(data));
+      });
 
-    this.deviceName = name || addr;
+      this.deviceName = name || addr;
 
-    // 握手：发 Connect 包、读型号/固件版本/电量
-    await this.negotiateAndGetPrinterInfo(() => {
-      void this.disconnect();
-    });
+      // 握手：发 Connect 包、读型号/固件版本/电量
+      await this.negotiateAndGetPrinterInfo(() => {
+        void this.disconnect();
+      });
+    } catch (e) {
+      await this.disconnect();
+      throw e;
+    }
 
     const result: ConnectionInfo = {
       deviceName: this.deviceName,
@@ -225,7 +236,14 @@ export class TauriBleClient extends NiimbotAbstractClient {
     return result;
   }
 
+  /**
+   * 主动断开（重连、换设备、程序退出都走这里）。
+   * 只断连、不发 disconnect 事件：事件留给"打印机被抢走 / 休眠"这种被动掉线，
+   * 否则主动重连时界面会误报"被其他设备抢占"。
+   * 同时把连接代号 +1，让这次连接的迟到回调失效。
+   */
   async disconnect(): Promise<void> {
+    this.connGen += 1;
     this.stopHeartbeat();
     const conn = this.conn;
     this.conn = null;

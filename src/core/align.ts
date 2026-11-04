@@ -148,11 +148,6 @@ export function containerOf(paper: PaperSetup): number {
   return Math.min(paper.widthMm, headMm);
 }
 
-/** 纸的几何中心 X（够不到的地方不算，所以按 containerOf 折半） */
-export function paperCenterMm(paper: PaperSetup): number {
-  return round2(containerOf(paper) / 2);
-}
-
 /**
  * 把元素按中心摆放：只改 x（给了 widthMm 时连 w 一起改），不动 y / h。
  * 返回值里带 left / right / centerX，面板上可以直接显示。

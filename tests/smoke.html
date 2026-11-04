@@ -95,12 +95,14 @@
       const boxes = document.querySelectorAll(".el-box");
       check("示例模板渲染 5 个元素框", boxes.length === 5, `实际 ${boxes.length}`);
 
-      // 2. 画布尺寸 = 打印头点数 × 纸高换算
+      // 2. 画布尺寸 = 打印头点数 × 纸高换算（预览 backing 会按屏幕像素放大）
       const cv = document.getElementById("preview");
       const size = canvasSizeOf(editor.getDoc());
-      check("画布尺寸正确", cv.width === size.width && cv.height === size.height,
-        `${cv.width}×${cv.height} vs ${size.width}×${size.height}`);
-      check("纸高 30mm @203dpi = 240 点", cv.height === 240, String(cv.height));
+      check("画布尺寸正确",
+        Number(cv.dataset.printWidth) === size.width && Number(cv.dataset.printHeight) === size.height,
+        `${cv.dataset.printWidth}×${cv.dataset.printHeight} vs ${size.width}×${size.height}`);
+      check("纸高 30mm @203dpi = 240 点",
+        Number(cv.dataset.printHeight) === 240, cv.dataset.printHeight);
 
       // 3. 加一个文字元素
       editor.add("text");
@@ -121,7 +123,8 @@
       editor.setPaperSize({ heightMm: 40 });
       await wait(200);
       const cv2 = document.getElementById("preview");
-      check("纸高 30→40mm 画布重算", cv2.height === Math.round((40 * 203) / 25.4), String(cv2.height));
+      check("纸高 30→40mm 画布重算",
+        Number(cv2.dataset.printHeight) === Math.round((40 * 203) / 25.4), cv2.dataset.printHeight);
 
       // 6. 删除元素
       const before = editor.getDoc().elements.length;
@@ -145,12 +148,16 @@
       editor.setDoc(emptyDoc({ ...paper }));
       await wait(200);
       check("空白文档元素清空", document.querySelectorAll(".el-box").length === 0);
-      check("空白文档画布 400×240", cv2.width === 400 && cv2.height === 240, `${cv2.width}×${cv2.height}`);
+      check("空白文档画布 400×240",
+        Number(cv2.dataset.printWidth) === 400 && Number(cv2.dataset.printHeight) === 240,
+        `${cv2.dataset.printWidth}×${cv2.dataset.printHeight}`);
 
       // 10. 缩放不影响打印点数
       editor.setZoom(0.5);
       await wait(150);
-      check("缩放只改 CSS 尺寸", cv2.width === 400 && cv2.style.width === "200px", cv2.style.width);
+      check("缩放只改 CSS 尺寸，打印点数不变",
+        Number(cv2.dataset.printWidth) === 400 && cv2.style.width === "200px",
+        `${cv2.dataset.printWidth}点 / CSS ${cv2.style.width}`);
 
       // 11. 文字默认上下左右居中
       const t = createText({ x: 5, y: 5, w: 20, h: 12, text: "居中", fontSizeMm: 3.5 });
@@ -162,15 +169,20 @@
       await wait(300);
 
       // 直接数像素：文字墨迹的外接框中心，应该和外框中心重合
-      const ink = inkBox(document.getElementById("preview"));
+      const pv = document.getElementById("preview");
+      // 预览按屏幕像素放大过，先把像素坐标折回打印点数
+      const pvScale = pv.width / Number(pv.dataset.printWidth);
+      const ink = inkBox(pv);
       const ppm = 203 / 25.4;
       const cx = (t.x + t.w / 2) * ppm;
       const cy = (t.y + t.h / 2) * ppm;
       check("墨迹存在", !!ink, ink ? `${ink.minX},${ink.minY}-${ink.maxX},${ink.maxY}` : "无");
       if (ink) {
-        check("水平居中（偏差 < 1 点）", Math.abs(ink.cx - cx) < 1, `偏差 ${(ink.cx - cx).toFixed(2)} 点`);
+        check("水平居中（偏差 < 1 点）", Math.abs(ink.cx / pvScale - cx) < 1,
+          `偏差 ${(ink.cx / pvScale - cx).toFixed(2)} 点`);
         // 字身内部有 ascent/descent 的天然不对称，3 个点以内就算居中
-        check("垂直居中（偏差 < 3 点）", Math.abs(ink.cy - cy) < 3, `偏差 ${(ink.cy - cy).toFixed(2)} 点`);
+        check("垂直居中（偏差 < 3 点）", Math.abs(ink.cy / pvScale - cy) < 3,
+          `偏差 ${(ink.cy / pvScale - cy).toFixed(2)} 点`);
       }
 
       // 12. 纸张宽度：默认 50mm 打满，切到 384 点才出现"打不到"，输入框不能被重建
@@ -187,8 +199,8 @@
       check("纸宽可以设成 50", editor.getDoc().paper.widthMm === 50, String(editor.getDoc().paper.widthMm));
       check(
         "画布宽度 400 点（50mm 打满）",
-        document.getElementById("preview").width === 400,
-        String(document.getElementById("preview").width)
+        Number(document.getElementById("preview").dataset.printWidth) === 400,
+        document.getElementById("preview").dataset.printWidth
       );
       check("50mm 纸不出现「打不到」区域", !document.querySelector(".dead-zone"));
       const wInAfter = document.querySelectorAll("#inspector input[type=number]")[0];
@@ -228,8 +240,8 @@
       await wait(200);
       check("纸宽 48mm → 位图 384 点（与 50 不同）",
         printableDotsOf(editor.getDoc().paper) === 384 &&
-          document.getElementById("preview").width === 384,
-        `${printableDotsOf(editor.getDoc().paper)} / 画布 ${document.getElementById("preview").width}`);
+          Number(document.getElementById("preview").dataset.printWidth) === 384,
+        `${printableDotsOf(editor.getDoc().paper)} / 画布 ${document.getElementById("preview").dataset.printWidth}`);
 
       // 12c. 换纸型时内容要跟着缩放，否则两种纸型的排版一模一样
       const sTxt = createText({ x: 2, y: 2, w: 20, h: 6, text: "缩放", fontSizeMm: 2 });
@@ -252,8 +264,8 @@
       check(
         "下拉选 48×30 → 纸宽 48、位图 384",
         editor.getDoc().paper.widthMm === 48 &&
-          document.getElementById("preview").width === 384,
-        `${editor.getDoc().paper.widthMm}mm / ${document.getElementById("preview").width}点`
+          Number(document.getElementById("preview").dataset.printWidth) === 384,
+        `${editor.getDoc().paper.widthMm}mm / ${document.getElementById("preview").dataset.printWidth}点`
       );
 
       // 12c-3 手输宽度：打字时只改纸，失焦（change）才缩放内容
@@ -463,6 +475,225 @@
             `底部墨点 ${bottomInk} / 框宽 ${bw}`
           );
         }
+      }
+
+      /* 15. 多选 + 批量对齐。
+       * 这里直接调 select(id, true) 模拟 Shift 加选：自动化环境里指针事件的
+       * shiftKey 不一定能传进浏览器，而"加选集合 + 对齐算法"本身在 editor 里，
+       * 测得着比硬模拟指针事件更可靠。 */
+      {
+        const a = createText({ x: 3, y: 4, w: 20, h: 8, text: "左", fontSizeMm: 3 });
+        const b = createText({ x: 30, y: 18, w: 12, h: 6, text: "右", fontSizeMm: 3 });
+        const c = createText({ x: 16, y: 8, w: 10, h: 6, text: "中", fontSizeMm: 3 });
+        editor.setDoc({ version: 1, name: "多选", paper: { ...paper }, elements: [a, b, c] });
+        await wait(140);
+
+        editor.select(a.id);
+        editor.select(b.id, true);
+        await wait(140);
+        check("Shift 加选后选中 2 个", editor.selectedElements().length === 2,
+          `${editor.selectedElements().length} 个`);
+        const panelTxt = document.getElementById("inspector").textContent;
+        check("多选面板提示「已选中 2 个元素」", panelTxt.includes("已选中 2 个元素"));
+        check("多选面板出现对齐按钮",
+          panelTxt.includes("左对齐") && panelTxt.includes("顶端对齐") && panelTxt.includes("垂直居中"));
+
+        editor.alignSelection("left", "左对齐");
+        const byId = (id) => editor.getDoc().elements.find((e) => e.id === id);
+        check("左对齐后两边 x 相同",
+          Math.abs(byId(a.id).x - byId(b.id).x) < 0.01, `${byId(a.id).x} / ${byId(b.id).x}`);
+        check("左对齐贴最左那条边（x=3）", Math.abs(byId(a.id).x - 3) < 0.01, String(byId(a.id).x));
+
+        editor.select(c.id, true);
+        await wait(140);
+        check("再 Shift 加选后变成 3 个", editor.selectedElements().length === 3,
+          `${editor.selectedElements().length} 个`);
+        editor.alignSelection("top", "顶端对齐");
+        check("顶端对齐后三个 y 相同",
+          Math.abs(byId(a.id).y - byId(c.id).y) < 0.01, `${byId(a.id).y} / ${byId(c.id).y}`);
+
+        // 减选：再 Shift 点一次同一个元素应该从选中集合里移除
+        editor.select(c.id, true);
+        check("Shift 再点一次是减选", editor.selectedElements().length === 2,
+          `${editor.selectedElements().length} 个`);
+
+        editor.removeSelected();
+        await wait(140);
+        check("删除所选后只剩 1 个元素", editor.getDoc().elements.length === 1,
+          `${editor.getDoc().elements.length} 个`);
+        check("删除后选中被清空", editor.selectedElements().length === 0);
+
+        /* 走真实指针事件路径再验一次：真实的 Shift+点击是 pointerdown 带 shiftKey，
+         * 上面的 editor.select(id, true) 只证明算法对，这一步证明入口也对。 */
+        editor.setDoc({ version: 1, name: "指针", paper: { ...paper }, elements: [a, b, c] });
+        await wait(140);
+        const boxes = document.querySelectorAll(".overlay [data-id]");
+        boxes[0].dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 1 }));
+        boxes[1].dispatchEvent(
+          new PointerEvent("pointerdown", { bubbles: true, pointerId: 1, shiftKey: true })
+        );
+        await wait(140);
+        check("Shift+点击（真实指针事件）能加选到 2 个",
+          editor.selectedElements().length === 2, `${editor.selectedElements().length} 个`);
+
+        /* 等间距：首尾不动，中间空隙平均分。
+         * 基准是"空隙"而不是中心：宽度不同时按中心等距看着并不均匀。 */
+        const d1 = createText({ x: 2, y: 20, w: 10, h: 6, text: "一", fontSizeMm: 2 });
+        const d2 = createText({ x: 20, y: 20, w: 6, h: 6, text: "二", fontSizeMm: 2 });
+        // 右边界 48mm，保持在 50mm 纸内，避免被"夹回纸内"影响首尾
+        const d3 = createText({ x: 36, y: 20, w: 12, h: 6, text: "三", fontSizeMm: 2 });
+        editor.setDoc({ version: 1, name: "等距", paper: { ...paper }, elements: [d1, d2, d3] });
+        await wait(140);
+        editor.select(d1.id);
+        editor.select(d2.id, true);
+        editor.select(d3.id, true);
+        await wait(140);
+        check("多选面板出现等间距按钮",
+          document.getElementById("inspector").textContent.includes("水平等间距"));
+        editor.alignSelection("spaceX", "水平等间距");
+        const gapA = byId(d2.id).x - (byId(d1.id).x + byId(d1.id).w);
+        const gapB = byId(d3.id).x - (byId(d2.id).x + byId(d2.id).w);
+        check("水平等间距：首尾不动",
+          Math.abs(byId(d1.id).x - 2) < 0.01 && Math.abs(byId(d3.id).x - 36) < 0.01,
+          `${byId(d1.id).x} / ${byId(d3.id).x}`);
+        check("水平等间距：两段空隙相等", Math.abs(gapA - gapB) < 0.11, `${gapA} vs ${gapB}`);
+
+        /* 触摸手势：轻点一个选一个（多选入口），连点同一个元素两下 = 编辑，长按 = 加选/减选。
+         * 手机上没有 Shift 也没有可靠的 dblclick，这几个手势就是手机端的入口。 */
+        editor.setDoc({
+          version: 1,
+          name: "手势",
+          paper: { ...paper },
+          elements: [
+            createText({ x: 5, y: 5, w: 30, h: 10, text: "点我", fontSizeMm: 3 }),
+            createText({ x: 5, y: 18, w: 20, h: 6, text: "另一个", fontSizeMm: 2 }),
+          ],
+        });
+        await wait(160);
+        const gb = document.querySelectorAll(".overlay [data-id]");
+        const tap = (node, type) =>
+          node.dispatchEvent(
+            new PointerEvent(type, {
+              bubbles: true,
+              pointerId: 2,
+              pointerType: "touch",
+              clientX: 20,
+              clientY: 20,
+            })
+          );
+        tap(gb[0], "pointerdown");
+        tap(gb[0], "pointerup");
+        await wait(80);
+        check("轻点第一个元素选中 1 个", editor.selectedElements().length === 1,
+          `${editor.selectedElements().length} 个`);
+
+        // 紧接着点第二个元素：累加选中，且不能因为"两次轻点"被误判成双击
+        tap(gb[1], "pointerdown");
+        tap(gb[1], "pointerup");
+        await wait(120);
+        check("轻点第二个元素后选中 2 个（手机多选入口）",
+          editor.selectedElements().length === 2, `${editor.selectedElements().length} 个`);
+
+        // 再点一次已选中的元素 = 取消它。等过连点窗口，否则会被当成双击去编辑
+        await wait(380);
+        tap(gb[1], "pointerdown");
+        tap(gb[1], "pointerup");
+        await wait(120);
+        check("再点已选中的元素就取消它（剩 1 个）",
+          editor.selectedElements().length === 1, `${editor.selectedElements().length} 个`);
+        // 再点一次加回来，后面的用例仍按 2 个预期
+        await wait(380);
+        tap(gb[1], "pointerdown");
+        tap(gb[1], "pointerup");
+        await wait(120);
+        check("再点一次重新加选回 2 个",
+          editor.selectedElements().length === 2, `${editor.selectedElements().length} 个`);
+        check("点不同元素不算双击", !document.querySelector(".inline-editor"));
+
+        // 点画布空白处取消全部
+        document.getElementById("overlay").dispatchEvent(
+          new PointerEvent("pointerdown", { bubbles: true })
+        );
+        await wait(120);
+        check("点空白处取消全部选中", editor.selectedElements().length === 0,
+          `${editor.selectedElements().length} 个`);
+
+        tap(gb[0], "pointerdown");
+        tap(gb[0], "pointerup");
+        await wait(80);
+        tap(gb[0], "pointerdown");
+        tap(gb[0], "pointerup");
+        await wait(200);
+        check("手机连点两下进入就地编辑", !!document.querySelector(".inline-editor"));
+
+        // 长按第二个元素 500ms：应从"单选第一个"变成"两个都选中"
+        tap(gb[1], "pointerdown");
+        await wait(560);
+        check("长按 500ms 加选/减选（手机取消单个选中）",
+          editor.selectedElements().length === 2, `${editor.selectedElements().length} 个`);
+        tap(gb[1], "pointerup");
+        // 收掉就地编辑框
+        document.getElementById("overlay").dispatchEvent(
+          new PointerEvent("pointerdown", { bubbles: true })
+        );
+        await wait(160);
+        check("点空白处收起就地编辑框", !document.querySelector(".inline-editor"));
+      }
+
+      /* 16. 双击文字就地编辑 */
+      {
+        editor.setDoc({
+          version: 1,
+          name: "双击",
+          paper: { ...paper },
+          elements: [createText({ x: 5, y: 5, w: 30, h: 10, text: "旧文字", fontSizeMm: 3 })],
+        });
+        await wait(140);
+        const id = editor.getDoc().elements[0].id;
+        const box = document.querySelector(`.overlay [data-id="${id}"]`);
+        box.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+        await wait(160);
+
+        const ta = document.querySelector(".overlay .inline-editor");
+        check("双击文字出现就地编辑框", Boolean(ta), ta ? "有" : "无");
+        if (ta) {
+          check("编辑框字号跟着元素缩放", ta.style.fontSize.endsWith("px"), ta.style.fontSize);
+          /* 编辑框开着的时候再触发一轮渲染。以前 syncBoxes 把遮罩里的 textarea
+           * 当成"已被删除的元素"一并 remove()，删它又触发 blur → finish() 再删一次，
+           * 第二次抛 NotFoundError，整屏变成"启动失败"。这条盯的就是那个回归。 */
+          ta.value = "渲染中";
+          ta.dispatchEvent(new Event("input", { bubbles: true }));
+          await wait(160);
+          check("渲染期间就地编辑框不被误删",
+            document.querySelector(".inline-editor") === ta);
+
+          /* 模拟真实输入：先派发 input（边打边写回），再点空白处收框。
+           * 不依赖 blur——无头环境里 focus() 之后往往不派发 blur。 */
+          ta.value = "新文字";
+          ta.dispatchEvent(new Event("input", { bubbles: true }));
+          document.getElementById("overlay").dispatchEvent(
+            new PointerEvent("pointerdown", { bubbles: true })
+          );
+          await wait(160);
+          check("编辑后内容写回文档", editor.getDoc().elements[0].text === "新文字",
+            editor.getDoc().elements[0].text);
+          check("编辑框已收起（点别处即收）", !document.querySelector(".inline-editor"));
+        }
+      }
+
+      /* 17. 纸张区：去掉"打印头"选项，直接显示尺寸；预览按屏幕像素渲染 */
+      {
+        editor.setDoc(emptyDoc({ ...paper }));
+        await wait(160);
+        const txt = document.getElementById("inspector").textContent;
+        check("纸张区不再出现「打印头」选项", !txt.includes("打印头"));
+        check("纸张区直接显示 50×30", txt.includes("50×30 mm"));
+        const cv = document.getElementById("preview");
+        check(
+          "预览 backing 分辨率不低于打印点数（不被拉伸糊掉）",
+          cv.width >= Number(cv.dataset.printWidth) && cv.height >= Number(cv.dataset.printHeight),
+          `${cv.width}×${cv.height} / ${cv.dataset.printWidth}×${cv.dataset.printHeight}`
+        );
       }
 
       const summary = document.createElement("h2");

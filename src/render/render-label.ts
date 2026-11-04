@@ -29,11 +29,17 @@ import type {
 } from "../core/label-doc";
 import { dotsPerMm, mmToDots } from "../core/units";
 
+/** 一张图片的解码结果 + 按"框尺寸/填充方式/阈值"缓存的黑白位图 */
+export interface CachedImage {
+  source: HTMLImageElement;
+  variants: Map<string, HTMLCanvasElement>;
+}
+
 /** 渲染上下文里带缓存，避免每帧重新生成条码图片 */
 export interface RenderCache {
   barcode: Map<string, HTMLCanvasElement>;
   qrcode: Map<string, HTMLCanvasElement>;
-  image: Map<string, HTMLImageElement>;
+  image: Map<string, CachedImage>;
   /* 文字位图缓存。拖拽元素时只有坐标在变、文字本身没变，
    * 缓存命中后一帧只要一次 drawImage，40ms 的超采样开销全省下来。 */
   text: Map<string, HTMLCanvasElement>;
@@ -41,6 +47,11 @@ export interface RenderCache {
 
 export function createCache(): RenderCache {
   return { barcode: new Map(), qrcode: new Map(), image: new Map(), text: new Map() };
+}
+
+/** 丢掉某张图片的全部缓存（重新选图后调用，避免继续用旧图） */
+export function forgetImage(cache: RenderCache, dataUrl: string): void {
+  cache.image.delete(dataUrl);
 }
 
 /** 缓存别无限涨：改一次字就多一份 */
@@ -53,7 +64,7 @@ function remember(map: Map<string, HTMLCanvasElement>, key: string, cv: HTMLCanv
 }
 
 /** 整张标签的像素尺寸，打印和预览共用 */
-export function canvasSizeOf(doc: LabelDoc) {
+export function canvasSizeOf(doc: Pick<LabelDoc, "paper">) {
   return {
     width: printableDotsOf(doc.paper),
     height: mmToDots(doc.paper.heightMm, doc.paper.dpi),
@@ -82,11 +93,17 @@ export function printableMmOf(paper: PaperSetup): number {
 export async function renderLabel(
   canvas: HTMLCanvasElement,
   doc: LabelDoc,
-  cache: RenderCache = createCache()
+  cache: RenderCache = createCache(),
+  options: { scale?: number } = {}
 ): Promise<void> {
+  /* scale > 1 用于"预览"：按屏幕像素渲染，避免 1 位位图被浏览器拉伸成糊的。
+   * 打印路径不传，默认 1，输出必须严格等于打印头点数。 */
+  const scale = Math.max(1, options.scale ?? 1);
   const { width, height } = canvasSizeOf(doc);
-  if (canvas.width !== width) canvas.width = width;
-  if (canvas.height !== height) canvas.height = height;
+  const cw = Math.round(width * scale);
+  const ch = Math.round(height * scale);
+  if (canvas.width !== cw) canvas.width = cw;
+  if (canvas.height !== ch) canvas.height = ch;
 
   const g = canvas.getContext("2d");
   if (!g) return;
@@ -94,10 +111,10 @@ export async function renderLabel(
   g.save();
   g.setTransform(1, 0, 0, 1, 0, 0);
   g.fillStyle = "#fff";
-  g.fillRect(0, 0, width, height);
+  g.fillRect(0, 0, cw, ch);
   g.restore();
 
-  const ppm = dotsPerMm(doc.paper.dpi);
+  const ppm = dotsPerMm(doc.paper.dpi) * scale;
   for (const el of doc.elements) {
     if (!el.visible) continue;
     await drawElement(g, el, ppm, cache);
@@ -158,12 +175,20 @@ async function drawElement(
   const w = el.w * ppm;
   const h = el.h * ppm;
 
+  /* 90°/270° 时内容的外框要交换宽高。
+   * 否则一个 30×10 的元素转 90° 后，内容仍是 30 宽 10 高，绕中心转完
+   * 会变成 10×30 的竖条，横竖都溢出原框——画出来的东西和选择框对不上。
+   * 交换后内容正好填满"旋转后的包围盒"，覆盖框不用再单独处理。 */
+  const swap = el.rotate === 90 || el.rotate === 270;
+  const bw = swap ? h : w;
+  const bh = swap ? w : h;
+
   g.save();
   if (el.rotate !== 0) {
-    // 绕元素中心旋转，转完把坐标系挪回去，下面的代码仍然按左上角画
+    // 绕元素中心旋转，转完把坐标系挪回内容左上角
     g.translate(x + w / 2, y + h / 2);
     g.rotate((el.rotate * Math.PI) / 180);
-    g.translate(-w / 2, -h / 2);
+    g.translate(-bw / 2, -bh / 2);
   } else {
     g.translate(x, y);
   }
@@ -172,17 +197,17 @@ async function drawElement(
    * 条码的明文、超长的文字都可能比框大，不裁的话会压到别的元素上，
    * 而打印机上看到的就是"莫名其妙多出来一截黑"。裁掉＝所见即所得。 */
   g.beginPath();
-  g.rect(0, 0, w, h);
+  g.rect(0, 0, bw, bh);
   g.clip();
 
   switch (el.type) {
     case "text":
-      drawText(g, el, ppm, w, h, cache);
+      drawText(g, el, ppm, bw, bh, cache);
       break;
     case "rect": {
       // 整数像素 + 四条实心边，不用 strokeRect：描边会带抗锯齿，点阵边上全是灰
-      const W = Math.round(w);
-      const H = Math.round(h);
+      const W = Math.round(bw);
+      const H = Math.round(bh);
       g.fillStyle = "#000";
       if (el.filled) {
         g.fillRect(0, 0, W, H);
@@ -197,8 +222,8 @@ async function drawElement(
     }
     case "line": {
       g.fillStyle = "#000";
-      const W = Math.round(w);
-      const H = Math.round(h);
+      const W = Math.round(bw);
+      const H = Math.round(bh);
       const t = Math.max(1, Math.round(el.thicknessMm * ppm));
       // 用矩形画线，不走 stroke，避免端点圆角影响点阵精度
       if (W >= H) {
@@ -209,13 +234,13 @@ async function drawElement(
       break;
     }
     case "barcode":
-      drawBarcode(g, el, ppm, w, h, cache);
+      drawBarcode(g, el, ppm, bw, bh, cache);
       break;
     case "qrcode":
-      await drawQr(g, el, w, h, cache);
+      await drawQr(g, el, bw, bh, cache);
       break;
     case "image":
-      await drawImage(g, el, w, h, cache);
+      await drawImage(g, el, bw, bh, cache);
       break;
   }
 
@@ -233,16 +258,23 @@ async function drawElement(
  * 阈值一卡就断笔、缺肉，看着比原来还脏。
  *
  * 解法是按 3 倍把字画大，再按"覆盖率"降到 1 倍：
- * 每个输出点 = 9 个样本里有多少被笔画盖住，超过 40% 就打墨。
+ * 每个输出点 = 9 个样本里有多少被笔画盖住，超过 50% 就打墨。
  * 这等价于把字形轮廓重新栅格化一遍，小字也能保住笔画。
  */
 const TEXT_SS = 3;
-/** 降采样判定：覆盖率 > 这个比例就算墨。0.4 略偏"留墨"，抵消热敏纸欠烧 */
+/** 降采样判定：覆盖率 ≥ 这个比例就算墨。0.5 略偏"留墨"，抵消热敏纸欠烧 */
 const INK_COVERAGE = 0.5;
+
+/* 字体栈：先中文黑体，再退回系统无衬线。
+ * 安卓上没有雅黑，最终会落到 Noto Sans CJK；字宽略有差异，
+ * 折行结果可能和桌面差一点，这是跨平台模板无法完全一致的部分。 */
+const FONT_STACK =
+  '"Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", "Source Han Sans SC", ' +
+  '"WenQuanYi Micro Hei", "Heiti SC", sans-serif';
 
 function fontOf(el: TextElement, ppm: number): string {
   const px = Math.max(1, el.fontSizeMm * ppm);
-  return `${el.bold ? "bold " : ""}${px}px "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif`;
+  return `${el.bold ? "bold " : ""}${px}px ${FONT_STACK}`;
 }
 
 /** 文字位图的缓存键：所有影响"长什么样"的字段都在里面，坐标不在（坐标只影响贴的位置） */
@@ -466,7 +498,7 @@ function fitBarcodeText(text: string, fontMm: number, boxW: number, ppm: number)
   const probe = document.createElement("canvas").getContext("2d");
   if (!probe) return fontMm;
   const measure = (mm: number) => {
-    probe.font = `${mm * ppm}px "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif`;
+    probe.font = `${mm * ppm}px ${FONT_STACK}`;
     return probe.measureText(text).width;
   };
   const w = measure(fontMm);
@@ -684,65 +716,98 @@ async function drawImage(
     return;
   }
 
-  let img = cache.image.get(el.dataUrl);
-  if (!img) {
-    img = new Image();
+  /* 图片先解码一次，之后按"框尺寸 + 填充 + 阈值 + 抖动"缓存**二值化结果**。
+   * 原来每帧都重新 drawImage + 逐像素二值化/抖动，拖带照片的标签时
+   * 一帧要几十毫秒；缓存后拖拽只需要一次 drawImage。 */
+  const boxW = Math.max(1, Math.round(w));
+  const boxH = Math.max(1, Math.round(h));
+
+  let entry = cache.image.get(el.dataUrl);
+  if (!entry) {
+    const img = new Image();
     img.src = el.dataUrl;
     try {
       await img.decode();
     } catch {
       return;
     }
-    cache.image.set(el.dataUrl, img);
+    entry = { source: img, variants: new Map() };
+    cache.image.set(el.dataUrl, entry);
+    if (cache.image.size > 8) {
+      const first = cache.image.keys().next().value;
+      if (first !== undefined) cache.image.delete(first);
+    }
   }
 
+  const variantKey = `${boxW}x${boxH}|${el.fit}|${el.threshold}|${el.dither ? 1 : 0}`;
+  let out = entry.variants.get(variantKey);
+  if (!out) {
+    const composed = composeImage(entry.source, el, boxW, boxH);
+    if (!composed) return;
+    entry.variants.set(variantKey, composed);
+    if (entry.variants.size > 8) {
+      const first = entry.variants.keys().next().value;
+      if (first !== undefined) entry.variants.delete(first);
+    }
+    out = composed;
+  }
+
+  g.drawImage(out, 0, 0);
+}
+
+/** 按 fit 规则把图片摆进框里，再做二值化/抖动，返回框大小的黑白位图 */
+function composeImage(
+  img: HTMLImageElement,
+  el: ImageElement,
+  boxW: number,
+  boxH: number
+): HTMLCanvasElement | null {
   // 先按 fit 规则算出绘制区域
   const ratio = img.width / img.height;
-  let dw = w;
-  let dh = h;
+  let dw = boxW;
+  let dh = boxH;
   let dx = 0;
   let dy = 0;
 
   if (el.fit === "contain") {
-    if (w / h > ratio) {
-      dh = h;
-      dw = h * ratio;
-      dx = (w - dw) / 2;
+    if (boxW / boxH > ratio) {
+      dh = boxH;
+      dw = boxH * ratio;
+      dx = (boxW - dw) / 2;
     } else {
-      dw = w;
-      dh = w / ratio;
-      dy = (h - dh) / 2;
+      dw = boxW;
+      dh = boxW / ratio;
+      dy = (boxH - dh) / 2;
     }
   } else if (el.fit === "cover") {
-    if (w / h > ratio) {
-      dw = w;
-      dh = w / ratio;
-      dy = (h - dh) / 2;
+    if (boxW / boxH > ratio) {
+      dw = boxW;
+      dh = boxW / ratio;
+      dy = (boxH - dh) / 2;
     } else {
-      dh = h;
-      dw = h * ratio;
-      dx = (w - dw) / 2;
+      dh = boxH;
+      dw = boxH * ratio;
+      dx = (boxW - dw) / 2;
     }
   }
 
   const tmp = document.createElement("canvas");
-  tmp.width = Math.max(1, Math.round(w));
-  tmp.height = Math.max(1, Math.round(h));
-  const tg = tmp.getContext("2d");
-  if (!tg) return;
+  tmp.width = boxW;
+  tmp.height = boxH;
+  const tg = tmp.getContext("2d", { willReadFrequently: true });
+  if (!tg) return null;
 
   tg.fillStyle = "#fff";
-  tg.fillRect(0, 0, tmp.width, tmp.height);
+  tg.fillRect(0, 0, boxW, boxH);
   tg.drawImage(img, dx, dy, dw, dh);
 
   // 二值化：照片类走抖动，线条图直接卡阈值，边缘更干净
   if (el.dither) {
-    applyFloydSteinberg(tg, tmp.width, tmp.height, el.threshold);
+    applyFloydSteinberg(tg, boxW, boxH, el.threshold);
   } else {
-    applyThreshold(tg, tmp.width, tmp.height, el.threshold);
+    applyThreshold(tg, boxW, boxH, el.threshold);
   }
-
-  g.drawImage(tmp, 0, 0);
+  return tmp;
 }
 
 function applyThreshold(g: CanvasRenderingContext2D, w: number, h: number, threshold: number) {

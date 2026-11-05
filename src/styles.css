@@ -536,34 +536,42 @@ input[type="range"] {
   }
   header h1 { font-size: 17px; font-weight: 600; }
 
-  /* 手机上页面本身不滚动；画布按"能用的宽 × 1.4"放大，
-   * 放不下的部分只在预览卡片内部滚（编辑小字需要更大的显示比例） */
+  /* 手机上整页纵向滚动：首屏给大预览 + 模板行 + 加元素行，
+   * 纸张和属性面板往下滑就能看到 */
   main {
     display: flex;
     flex-direction: column;
-    overflow: hidden;
+    overflow-y: auto;
+    overflow-x: hidden;
     padding-bottom: calc(150px + env(safe-area-inset-bottom));
   }
 
   /* ---- 编辑页 ---- */
+  /* 预览要足够大才方便编辑，所以手机上整页可以纵向滚动：
+   * 首屏是"大预览 + 模板行 + 加元素行"，往下滑才是纸张和属性面板。
+   * 原先靠压缩各部分塞进一屏，预览只剩两成高度，字根本点不中。 */
   .workspace {
     display: flex;
     flex-direction: column;
-    flex: 1 1 auto;
+    flex: 0 0 auto;
     min-height: 0;
     padding: 10px 12px 0;
-    overflow: hidden;
+    overflow: visible;
   }
   /* 桌面工具栏整块隐藏，功能都在 add-bar 和 dock 里 */
   .toolbar { display: none; }
 
-  /* 预览是一张白卡片，占满剩余高度；里面的画布由编辑器按这个框缩放。
-   * 画布放大到比卡片大时，卡片自己内部滚动（页面不滚）；
-   * 居中靠子元素 margin:auto 而不是 align/justify——
-   * 否则内容超出时顶部会被裁掉还滚不上去。 */
+  /* 预览卡片按标签本身的高度自适应，不预留固定高度——
+   * 固定高度会在标签上下留出一大片空白，白占地方又不好点。 */
   .stage-wrap {
-    flex: 1 1 auto;
-    min-height: 0;
+    flex: 0 0 auto;
+    height: auto;
+    /* 宽度锁死在容器上：否则画布一旦算大一点，卡片会被内容撑宽，
+     * 下次量到的还是那个被撑大的宽度，越量越大（右边就被裁掉了） */
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
     display: flex;
     padding: 8px;
     border: 1px solid var(--line);

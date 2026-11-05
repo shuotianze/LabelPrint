@@ -536,7 +536,7 @@ let templates: SavedTemplate[] = loadTemplates();
 type TplRef = { kind: "builtin"; key: string } | { kind: "local"; name: string };
 let currentTpl: TplRef | null = null;
 
-/** 最近用过的模板名，存在本地，用来把常用的排到最前面 */
+/** 最近用过的模板键（`local:名字` / `builtin:key`），存在本地，用来把常用的排到最前面 */
 const RECENT_KEY = "labelprint:tpl-recent";
 let recentNames: string[] = (() => {
   try {
@@ -547,8 +547,11 @@ let recentNames: string[] = (() => {
   }
 })();
 
-function markRecent(name: string) {
-  recentNames = [name, ...recentNames.filter((n) => n !== name)].slice(0, 20);
+/** 模板的唯一键。本地和内置用一个命名空间，排序时才能放在一起比 */
+const tplKeyOf = (kind: "local" | "builtin", id: string) => `${kind}:${id}`;
+
+function markRecent(key: string) {
+  recentNames = [key, ...recentNames.filter((n) => n !== key)].slice(0, 20);
   try {
     localStorage.setItem(RECENT_KEY, JSON.stringify(recentNames));
   } catch {
@@ -556,13 +559,21 @@ function markRecent(name: string) {
   }
 }
 
+/** 用过的排前面（下标越小越靠前），没用过的排最后 */
+function recentRank(key: string): number {
+  let i = recentNames.indexOf(key);
+  // 旧版本只记本地模板名、不带前缀，读旧数据时兼容一下
+  if (i < 0 && key.startsWith("local:")) i = recentNames.indexOf(key.slice(6));
+  return i < 0 ? Number.MAX_SAFE_INTEGER : i;
+}
+
 /** 自己的模板排序：最近用过的在前，其余按保存时间倒序 */
 function orderedLocal(): SavedTemplate[] {
-  const rank = (t: SavedTemplate) => {
-    const i = recentNames.indexOf(t.name);
-    return i < 0 ? 999 : i;
-  };
-  return [...templates].sort((a, b) => rank(a) - rank(b) || b.savedAt - a.savedAt);
+  return [...templates].sort(
+    (a, b) =>
+      recentRank(tplKeyOf("local", a.name)) - recentRank(tplKeyOf("local", b.name)) ||
+      b.savedAt - a.savedAt
+  );
 }
 
 /** 缩略图缓存：重绘一次就够，来回切换模板不用重画 */
@@ -653,18 +664,53 @@ function makeCard(
   return card;
 }
 
+/** 卡片列表的一项：本地和内置放在同一个列表里，才好一起按最近使用排序 */
+interface TplCardItem {
+  kind: "local" | "builtin";
+  id: string;
+  name: string;
+  meta: string;
+  doc: SavedTemplate["doc"];
+}
+
+/**
+ * 卡片顺序：最近用过的自动排到最前，本地和内置不分家。
+ * 没用过的保持默认顺序——本地按保存时间倒序在前，内置按预设顺序在后。
+ * sort 是稳定的，所以相同"没用过"的项不会被打乱。
+ */
+function tplCardItems(): TplCardItem[] {
+  const locals = [...templates]
+    .sort((a, b) => b.savedAt - a.savedAt)
+    .map(
+      (t): TplCardItem => ({
+        kind: "local",
+        id: t.name,
+        name: t.name,
+        meta: `${t.doc.paper.widthMm}×${t.doc.paper.heightMm}`,
+        doc: t.doc,
+      })
+    );
+  const builtins = BUILTIN_PRESETS.map(
+    (p): TplCardItem => ({
+      kind: "builtin",
+      id: p.key,
+      name: p.label,
+      meta: "",
+      doc: buildPreset(p.key, { ...DEFAULT_PAPER }),
+    })
+  );
+  return [...locals, ...builtins].sort(
+    (a, b) => recentRank(tplKeyOf(a.kind, a.id)) - recentRank(tplKeyOf(b.kind, b.id))
+  );
+}
+
 /** 手机编辑页的模板卡片行 */
 function renderTemplateCards() {
   const box = $("tpl-cards");
   box.textContent = "";
 
-  for (const t of orderedLocal()) {
-    box.appendChild(
-      makeCard("local", t.name, t.name, `${t.doc.paper.widthMm}×${t.doc.paper.heightMm}`, t.doc)
-    );
-  }
-  for (const p of BUILTIN_PRESETS) {
-    box.appendChild(makeCard("builtin", p.key, p.label, "", buildPreset(p.key, { ...DEFAULT_PAPER })));
+  for (const item of tplCardItems()) {
+    box.appendChild(makeCard(item.kind, item.id, item.name, item.meta, item.doc));
   }
   box.appendChild(makeCard("add", "", "存为模板", ""));
 
@@ -707,6 +753,7 @@ function applyBuiltin(key: string) {
   const paper = { ...editor.getDoc().paper };
   editor.setDoc(buildPreset(key, paper));
   currentTpl = { kind: "builtin", key };
+  markRecent(tplKeyOf("builtin", key));
   renderTemplateCards();
   log(`已套用内置模板：${p?.label ?? key}（纸张保持 ${paper.widthMm}×${paper.heightMm}mm）`);
 }
@@ -717,7 +764,7 @@ function applyLocal(name: string, quiet = false) {
   // 自己的模板连纸张一起恢复，卡片上标了纸型，套用后纸型跟着变
   editor.setDoc({ ...t.doc, paper: { ...t.doc.paper } });
   currentTpl = { kind: "local", name };
-  markRecent(name);
+  markRecent(tplKeyOf("local", name));
   renderTemplateCards();
   if (!quiet) log(`已载入模板「${name}」（${t.doc.paper.widthMm}×${t.doc.paper.heightMm}mm）`);
 }
@@ -790,9 +837,11 @@ function commitSheet() {
       templates = res.templates;
       thumbCache.delete(`local:${from}`);
       thumbCache.delete(`local:${name}`);
+      // 旧名字的最近使用记录没有意义了，顺手清掉
+      recentNames = recentNames.filter((n) => n !== tplKeyOf("local", from) && n !== from);
       if (currentTpl?.kind === "local" && currentTpl.name === from) {
         currentTpl = { kind: "local", name };
-        markRecent(name);
+        markRecent(tplKeyOf("local", name));
       }
       log(`模板已重命名：${from} → ${name}`);
     }
@@ -805,7 +854,7 @@ function commitSheet() {
     templates = res.templates;
     thumbCache.delete(`local:${name}`);
     currentTpl = { kind: "local", name };
-    markRecent(name);
+    markRecent(tplKeyOf("local", name));
     // 超出上限会丢最旧的一份，必须让用户知道，否则下次打开就"莫名少了模板"
     log(
       res.dropped
@@ -867,7 +916,9 @@ function copyTemplate(name: string) {
 function removeTemplate(name: string) {
   templates = deleteTemplate(name);
   thumbCache.delete(`local:${name}`);
-  recentNames = recentNames.filter((n) => n !== name);
+  recentNames = recentNames.filter(
+    (n) => n !== tplKeyOf("local", name) && n !== name
+  );
   if (currentTpl?.kind === "local" && currentTpl.name === name) currentTpl = null;
   renderTemplates();
   renderTemplateCards();
@@ -1008,7 +1059,7 @@ $("tpl-update").addEventListener("click", () => {
   }
   templates = res.templates;
   thumbCache.delete(`local:${currentTpl.name}`);
-  markRecent(currentTpl.name);
+  markRecent(tplKeyOf("local", currentTpl.name));
   renderTemplates();
   renderTemplateCards();
   log(`已更新模板「${currentTpl.name}」`);
